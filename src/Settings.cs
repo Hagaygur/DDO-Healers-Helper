@@ -8,6 +8,13 @@ namespace VoK.HealersHelper;
 
 internal sealed class Settings
 {
+    public const string DefaultLowHpBgHex = "#B84200";
+    public const string DefaultLowHpBorderHex = "#FFE066";
+    public const string DefaultCriticalBgHex = "#960A14";
+    public const string DefaultCriticalBorderHex = "#FFD644";
+    public const string DefaultBannerTextHex = "#FFFFFF";
+    public const string DefaultFlashAltBgHex = "#0A0A0E";
+
     public static readonly HotkeyBinding DefaultTogglePluginHotkey = new(0x4B, true, true, false);
     public static readonly HotkeyBinding DefaultFocusTargetHotkey = new(0x48, true, true, false);
     public static readonly HotkeyBinding DefaultToggleModeHotkey = new(0x4A, true, true, false);
@@ -32,6 +39,12 @@ internal sealed class Settings
     public bool ExcludeFromCapture { get; set; } = true;
     public double HudX { get; set; } = 0.50;
     public double HudY { get; set; } = 0.42;
+    public string LowHpBgHex { get; set; } = DefaultLowHpBgHex;
+    public string LowHpBorderHex { get; set; } = DefaultLowHpBorderHex;
+    public string CriticalBgHex { get; set; } = DefaultCriticalBgHex;
+    public string CriticalBorderHex { get; set; } = DefaultCriticalBorderHex;
+    public string BannerTextHex { get; set; } = DefaultBannerTextHex;
+    public string FlashAltBgHex { get; set; } = DefaultFlashAltBgHex;
     public bool StatusHudEnabled { get; set; } = true;
     public bool ShowRankOnStatusHud { get; set; } = true;
     public int StatusFontSizePixels { get; set; } = 14;
@@ -63,6 +76,7 @@ internal sealed class Settings
     public bool RestorePreviousTargetAfterHeal { get; set; } = true;
     public double RestoreTargetDelaySeconds { get; set; } = 0.2;
     public HotkeyBinding TogglePluginHotkey { get; set; } = DefaultTogglePluginHotkey;
+    public HotkeyBinding ToggleBannerHotkey { get; set; } = HotkeyBinding.Empty;
     public HotkeyBinding FocusTargetHotkey { get; set; } = DefaultFocusTargetHotkey;
     public HotkeyBinding ToggleModeHotkey { get; set; } = DefaultToggleModeHotkey;
     public HotkeyBinding TargetCriticalHotkey { get; set; } = DefaultTargetCriticalHotkey;
@@ -92,6 +106,12 @@ internal sealed class Settings
             ExcludeFromCapture = ExcludeFromCapture,
             HudX = HudX,
             HudY = HudY,
+            LowHpBgHex = NormalizeHexColor(LowHpBgHex, DefaultLowHpBgHex),
+            LowHpBorderHex = NormalizeHexColor(LowHpBorderHex, DefaultLowHpBorderHex),
+            CriticalBgHex = NormalizeHexColor(CriticalBgHex, DefaultCriticalBgHex),
+            CriticalBorderHex = NormalizeHexColor(CriticalBorderHex, DefaultCriticalBorderHex),
+            BannerTextHex = NormalizeHexColor(BannerTextHex, DefaultBannerTextHex),
+            FlashAltBgHex = NormalizeHexColor(FlashAltBgHex, DefaultFlashAltBgHex),
             StatusHudEnabled = StatusHudEnabled,
             ShowRankOnStatusHud = ShowRankOnStatusHud,
             StatusFontSizePixels = StatusFontSizePixels,
@@ -107,6 +127,7 @@ internal sealed class Settings
             RestorePreviousTargetAfterHeal = RestorePreviousTargetAfterHeal,
             RestoreTargetDelaySeconds = RestoreTargetDelaySeconds,
             TogglePluginHotkey = NormalizeHotkey(TogglePluginHotkey),
+            ToggleBannerHotkey = NormalizeHotkey(ToggleBannerHotkey),
             FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey),
             ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey),
             TargetCriticalHotkey = NormalizeHotkey(TargetCriticalHotkey),
@@ -148,6 +169,16 @@ internal sealed class Settings
         ReflexSampleCount = 0;
     }
 
+    public void ResetBannerColors()
+    {
+        LowHpBgHex = DefaultLowHpBgHex;
+        LowHpBorderHex = DefaultLowHpBorderHex;
+        CriticalBgHex = DefaultCriticalBgHex;
+        CriticalBorderHex = DefaultCriticalBorderHex;
+        BannerTextHex = DefaultBannerTextHex;
+        FlashAltBgHex = DefaultFlashAltBgHex;
+    }
+
     public void Validate()
     {
         if (!Enum.IsDefined(Mode)) Mode = TrackingMode.Party;
@@ -158,10 +189,16 @@ internal sealed class Settings
         DeadAlertSeconds = Math.Clamp(DeadAlertSeconds, 0, 60);
         MaxAlertSeconds = Math.Clamp(MaxAlertSeconds, 0, 120);
         FontSizePixels = Math.Clamp(FontSizePixels, 18, 140);
-        BannerOpacity = Math.Clamp(BannerOpacity, 80, 255);
+        BannerOpacity = Math.Clamp(BannerOpacity, 20, 255);
         FlashIntervalMs = Math.Clamp(FlashIntervalMs, 100, 1000);
         HudX = double.IsFinite(HudX) ? Math.Clamp(HudX, 0.0, 1.0) : 0.50;
         HudY = double.IsFinite(HudY) ? Math.Clamp(HudY, 0.0, 1.0) : 0.42;
+        LowHpBgHex = NormalizeHexColor(LowHpBgHex, DefaultLowHpBgHex);
+        LowHpBorderHex = NormalizeHexColor(LowHpBorderHex, DefaultLowHpBorderHex);
+        CriticalBgHex = NormalizeHexColor(CriticalBgHex, DefaultCriticalBgHex);
+        CriticalBorderHex = NormalizeHexColor(CriticalBorderHex, DefaultCriticalBorderHex);
+        BannerTextHex = NormalizeHexColor(BannerTextHex, DefaultBannerTextHex);
+        FlashAltBgHex = NormalizeHexColor(FlashAltBgHex, DefaultFlashAltBgHex);
         StatusFontSizePixels = Math.Clamp(StatusFontSizePixels, 9, 48);
         StatusHudX = double.IsFinite(StatusHudX) ? Math.Clamp(StatusHudX, 0.0, 1.0) : 0.50;
         StatusHudY = double.IsFinite(StatusHudY) ? Math.Clamp(StatusHudY, 0.0, 1.0) : 0.76;
@@ -214,11 +251,70 @@ internal sealed class Settings
             ? Math.Clamp(RestoreTargetDelaySeconds, 0.0, 5.0)
             : 0.2;
         TogglePluginHotkey = NormalizeHotkey(TogglePluginHotkey);
+        ToggleBannerHotkey = NormalizeHotkey(ToggleBannerHotkey);
         FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey);
         ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey);
         TargetCriticalHotkey = NormalizeHotkey(TargetCriticalHotkey);
         ResetSavedHotkey = NormalizeHotkey(ResetSavedHotkey);
         CopyScorecardHotkey = NormalizeHotkey(CopyScorecardHotkey);
+    }
+
+    public static string NormalizeHexColor(string? value, string fallback)
+    {
+        if (TryParseHexRgb(value, out int r, out int g, out int b))
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"#{r:X2}{g:X2}{b:X2}");
+        }
+
+        return TryParseHexRgb(fallback, out int fr, out int fg, out int fb)
+            ? string.Create(CultureInfo.InvariantCulture, $"#{fr:X2}{fg:X2}{fb:X2}")
+            : "#FFFFFF";
+    }
+
+    public static bool TryParseHexRgb(string? value, out int r, out int g, out int b)
+    {
+        r = g = b = 0;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        ReadOnlySpan<char> span = value.AsSpan().Trim();
+        if (span.Length > 0 && span[0] == '#')
+            span = span[1..];
+
+        if (span.Length == 3)
+        {
+            if (!TryHexNibble(span[0], out int rn)
+                || !TryHexNibble(span[1], out int gn)
+                || !TryHexNibble(span[2], out int bn))
+            {
+                return false;
+            }
+
+            r = (rn << 4) | rn;
+            g = (gn << 4) | gn;
+            b = (bn << 4) | bn;
+            return true;
+        }
+
+        if (span.Length == 6
+            && int.TryParse(span[0..2], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out r)
+            && int.TryParse(span[2..4], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out g)
+            && int.TryParse(span[4..6], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out b))
+        {
+            return true;
+        }
+
+        r = g = b = 0;
+        return false;
+    }
+
+    private static bool TryHexNibble(char c, out int value)
+    {
+        if (c is >= '0' and <= '9') { value = c - '0'; return true; }
+        if (c is >= 'a' and <= 'f') { value = c - 'a' + 10; return true; }
+        if (c is >= 'A' and <= 'F') { value = c - 'A' + 10; return true; }
+        value = 0;
+        return false;
     }
 
     private static HotkeyBinding NormalizeHotkey(HotkeyBinding? binding) =>

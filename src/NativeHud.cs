@@ -18,6 +18,7 @@ internal static class NativeHud
 
     internal const int WmNcHitTest = 0x0084;
     internal const int WmMouseActivate = 0x0021;
+    internal const int HtClient = 1;
     internal const int HtCaption = 2;
     internal const int HtTransparent = -1;
     internal const int MaNoActivate = 3;
@@ -82,6 +83,12 @@ internal static class NativeHud
         public uint Important;
     }
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)]
+    internal static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetWindowDisplayAffinity(IntPtr window, uint affinity);
@@ -145,6 +152,21 @@ internal static class NativeHud
 
 internal static class HudHostHelper
 {
+    internal static readonly bool IsWineRuntime = DetectWineRuntime();
+
+    private static bool DetectWineRuntime()
+    {
+        try
+        {
+            IntPtr ntdll = NativeHud.GetModuleHandle("ntdll.dll");
+            return ntdll != IntPtr.Zero && NativeHud.GetProcAddress(ntdll, "wine_get_version") != IntPtr.Zero;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static Rectangle GetTargetScreenBounds(IntPtr gameWindow)
     {
         if (gameWindow != IntPtr.Zero)
@@ -164,9 +186,29 @@ internal static class HudHostHelper
     public static string ApplyCaptureExclusion(IntPtr handle, bool exclude)
     {
         uint targetAffinity = exclude ? NativeHud.WdaExcludeFromCapture : NativeHud.WdaNone;
-        bool set = NativeHud.SetWindowDisplayAffinity(handle, targetAffinity);
-        int error = Marshal.GetLastWin32Error();
-        bool verified = set && NativeHud.GetWindowDisplayAffinity(handle, out uint actual) && actual == targetAffinity;
+        bool set = false;
+        int error = 0;
+        bool verified = false;
+        try
+        {
+            set = NativeHud.SetWindowDisplayAffinity(handle, targetAffinity);
+            error = Marshal.GetLastWin32Error();
+            verified = set && NativeHud.GetWindowDisplayAffinity(handle, out uint actual) && actual == targetAffinity;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            error = -1;
+        }
+        catch (DllNotFoundException)
+        {
+            error = -1;
+        }
+
+        if (exclude && !verified && IsWineRuntime)
+        {
+            return "Capture exclusion N/A (Wine/Proton)";
+        }
+
         return exclude
             ? (verified ? "Capture exclusion: ON" : $"Capture exclusion FAILED (Windows error {error})")
             : (verified ? "Capture exclusion: OFF" : $"Capture exclusion reset FAILED (Windows error {error})");
@@ -187,6 +229,13 @@ internal static class HudHostHelper
         }
 
         var current = NativeHud.GetForegroundWindow();
+        if (current == IntPtr.Zero)
+        {
+            cachedForeground = IntPtr.Zero;
+            cachedAllowed = IsWineRuntime;
+            return cachedAllowed;
+        }
+
         if (current == cachedForeground)
         {
             return cachedAllowed;

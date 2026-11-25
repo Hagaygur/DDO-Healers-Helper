@@ -33,7 +33,12 @@ internal sealed class BannerHudWindow : Form
     private bool _editing;
     private bool _movingProgrammatically;
     private bool _positionDirty;
+    private bool _layoutDirty;
     private bool _needsPosition = true;
+    private BannerEditDragMode _dragMode;
+    private Point _dragStartScreenPt;
+    private Rectangle _dragStartBounds;
+    private int _dragStartFontPixels;
     private string _captureStatus = "Capture exclusion not checked";
     private string _lastRenderKey = "";
     private Rectangle _screen;
@@ -73,6 +78,9 @@ internal sealed class BannerHudWindow : Form
             throw;
         }
     }
+
+    internal static BannerEditDragMode ClassifyEditHit(Size size, Point clientPt, int cornerGrip = 18, int edgeGrip = 14) =>
+        BannerPresentation.ClassifyEditHit(size.Width, size.Height, clientPt.X, clientPt.Y, cornerGrip, edgeGrip);
 
     protected override bool ShowWithoutActivation => true;
 
@@ -117,7 +125,7 @@ internal sealed class BannerHudWindow : Form
     {
         if (m.Msg == NativeHud.WmNcHitTest)
         {
-            m.Result = _editing ? new IntPtr(NativeHud.HtCaption) : new IntPtr(NativeHud.HtTransparent);
+            m.Result = _editing ? new IntPtr(NativeHud.HtClient) : new IntPtr(NativeHud.HtTransparent);
             return;
         }
 
@@ -136,22 +144,267 @@ internal sealed class BannerHudWindow : Form
         if (_editing && !_movingProgrammatically)
         {
             _positionDirty = true;
+            _layoutDirty = true;
             _lastMove = NowSeconds();
         }
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!_editing || e.Button != MouseButtons.Left)
+            return;
+
+        var mode = ClassifyEditHit(ClientSize, e.Location);
+        if (mode == BannerEditDragMode.None)
+            return;
+
+        _dragMode = mode;
+        _dragStartScreenPt = PointToScreen(e.Location);
+        _dragStartBounds = Bounds;
+        _dragStartFontPixels = Math.Clamp(
+            _settings.FontSizePixels,
+            BannerPresentation.MinFontSizePixels,
+            BannerPresentation.MaxFontSizePixels);
+        Capture = true;
+        Cursor = CursorForHit(mode);
+        ExtendEditWindow(NowSeconds());
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!_editing)
+        {
+            if (Cursor != Cursors.Default) Cursor = Cursors.Default;
+            return;
+        }
+
+        if (_dragMode == BannerEditDragMode.None)
+        {
+            Cursor = CursorForHit(ClassifyEditHit(ClientSize, e.Location));
+            return;
+        }
+
+        ApplyDragDelta(PointToScreen(e.Location));
+        ExtendEditWindow(NowSeconds());
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (_dragMode != BannerEditDragMode.None && e.Button == MouseButtons.Left)
+        {
+            _dragMode = BannerEditDragMode.None;
+            Capture = false;
+            Cursor = _editing ? CursorForHit(ClassifyEditHit(ClientSize, e.Location)) : Cursors.Default;
+            FlushLayoutIfDirty();
+        }
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (_dragMode == BannerEditDragMode.None && Cursor != Cursors.Default)
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (!_editing || e.Delta == 0)
+            return;
+
+        ApplyEditWheel(e.Delta, (ModifierKeys & Keys.Control) != 0);
+    }
+
+    private void ExtendEditWindow(double now)
+    {
+        _editUntil = Math.Max(_editUntil, now + 5.0);
+        _lastMove = now;
+    }
+
+    private static Cursor CursorForHit(BannerEditDragMode mode) => mode switch
+    {
+        BannerEditDragMode.ResizeTopLeft or BannerEditDragMode.ResizeBottomRight => Cursors.SizeNWSE,
+        BannerEditDragMode.ResizeTopRight or BannerEditDragMode.ResizeBottomLeft => Cursors.SizeNESW,
+        BannerEditDragMode.ResizeLeft or BannerEditDragMode.ResizeRight => Cursors.SizeWE,
+        BannerEditDragMode.ResizeTop or BannerEditDragMode.ResizeBottom => Cursors.SizeNS,
+        BannerEditDragMode.Move => Cursors.SizeAll,
+        _ => Cursors.Default
+    };
+
+    private void ApplyDragDelta(Point currentScreenPt)
+    {
+        int dx = currentScreenPt.X - _dragStartScreenPt.X;
+        int dy = currentScreenPt.Y - _dragStartScreenPt.Y;
+
+        if (_dragMode == BannerEditDragMode.Move)
+        {
+            int maxLeft = Math.Max(_screen.Left, _screen.Right - Width);
+            int maxTop = Math.Max(_screen.Top, _screen.Bottom - Height);
+            int nextX = Math.Clamp(_dragStartBounds.Left + dx, _screen.Left, maxLeft);
+            int nextY = Math.Clamp(_dragStartBounds.Top + dy, _screen.Top, maxTop);
+
+            _movingProgrammatically = true;
+            try
+            {
+                Location = new Point(nextX, nextY);
+            }
+            finally
+            {
+                _movingProgrammatically = false;
+            }
+
+            UpdateNormalizedPositionFromBounds();
+            if (IsHandleCreated)
+            {
+                _surface.Present(Handle, Location);
+            }
+
+            _positionDirty = true;
+            _layoutDirty = true;
+            return;
+        }
+
+        int w0 = Math.Max(1, _dragStartBounds.Width);
+        int h0 = Math.Max(1, _dragStartBounds.Height);
+        bool dragsLeft = _dragMode is BannerEditDragMode.ResizeLeft or BannerEditDragMode.ResizeTopLeft or BannerEditDragMode.ResizeBottomLeft;
+        bool dragsRight = _dragMode is BannerEditDragMode.ResizeRight or BannerEditDragMode.ResizeTopRight or BannerEditDragMode.ResizeBottomRight;
+        bool dragsTop = _dragMode is BannerEditDragMode.ResizeTop or BannerEditDragMode.ResizeTopLeft or BannerEditDragMode.ResizeTopRight;
+        bool dragsBottom = _dragMode is BannerEditDragMode.ResizeBottom or BannerEditDragMode.ResizeBottomLeft or BannerEditDragMode.ResizeBottomRight;
+
+        double ratioW = dragsLeft ? (w0 - dx) / (double)w0 : dragsRight ? (w0 + dx) / (double)w0 : 1.0;
+        double ratioH = dragsTop ? (h0 - dy) / (double)h0 : dragsBottom ? (h0 + dy) / (double)h0 : 1.0;
+        double scaleRatio = (dragsLeft || dragsRight) && (dragsTop || dragsBottom)
+            ? (ratioW + ratioH) * 0.5
+            : (dragsLeft || dragsRight)
+                ? ratioW
+                : ratioH;
+
+        int nextFont = Math.Clamp(
+            (int)Math.Round(_dragStartFontPixels * Math.Max(0.1, scaleRatio)),
+            BannerPresentation.MinFontSizePixels,
+            BannerPresentation.MaxFontSizePixels);
+
+        _settings.FontSizePixels = nextFont;
+        ReRenderCurrentEditFrame(reposition: false);
+
+        int anchorX = dragsLeft
+            ? _dragStartBounds.Right - Width
+            : dragsRight
+                ? _dragStartBounds.Left
+                : _dragStartBounds.Left + ((_dragStartBounds.Width - Width) / 2);
+
+        int anchorY = dragsTop
+            ? _dragStartBounds.Bottom - Height
+            : dragsBottom
+                ? _dragStartBounds.Top
+                : _dragStartBounds.Top + ((_dragStartBounds.Height - Height) / 2);
+
+        int clampedX = Math.Clamp(anchorX, _screen.Left, Math.Max(_screen.Left, _screen.Right - Width));
+        int clampedY = Math.Clamp(anchorY, _screen.Top, Math.Max(_screen.Top, _screen.Bottom - Height));
+
+        _movingProgrammatically = true;
+        try
+        {
+            Location = new Point(clampedX, clampedY);
+        }
+        finally
+        {
+            _movingProgrammatically = false;
+        }
+
+        UpdateNormalizedPositionFromBounds();
+        if (IsHandleCreated)
+        {
+            _surface.Present(Handle, Location);
+        }
+
+        _positionDirty = true;
+        _layoutDirty = true;
+    }
+
+    private void ApplyEditWheel(int wheelDelta, bool ctrlDown)
+    {
+        int notches = wheelDelta / 120;
+        if (notches == 0) notches = Math.Sign(wheelDelta);
+
+        double now = NowSeconds();
+        if (ctrlDown)
+        {
+            _settings.BannerOpacity = Math.Clamp(
+                _settings.BannerOpacity + (notches * 10),
+                BannerPresentation.MinBannerOpacity,
+                BannerPresentation.MaxBannerOpacity);
+            ReRenderCurrentEditFrame(reposition: false);
+            _layoutDirty = true;
+            ExtendEditWindow(now);
+            return;
+        }
+
+        Point center = new(Left + (Width / 2), Top + (Height / 2));
+        _settings.FontSizePixels = Math.Clamp(
+            _settings.FontSizePixels + (notches * 2),
+            BannerPresentation.MinFontSizePixels,
+            BannerPresentation.MaxFontSizePixels);
+        ReRenderCurrentEditFrame(reposition: false);
+
+        int nextX = Math.Clamp(center.X - (Width / 2), _screen.Left, Math.Max(_screen.Left, _screen.Right - Width));
+        int nextY = Math.Clamp(center.Y - (Height / 2), _screen.Top, Math.Max(_screen.Top, _screen.Bottom - Height));
+        _movingProgrammatically = true;
+        try
+        {
+            Location = new Point(nextX, nextY);
+        }
+        finally
+        {
+            _movingProgrammatically = false;
+        }
+
+        UpdateNormalizedPositionFromBounds();
+        if (IsHandleCreated)
+        {
+            _surface.Present(Handle, Location);
+        }
+
+        _positionDirty = true;
+        _layoutDirty = true;
+        ExtendEditWindow(now);
+    }
+
+    private void ReRenderCurrentEditFrame(bool reposition)
+    {
+        double now = NowSeconds();
+        bool demo = now - _previewStart < PreviewDurationSeconds;
+        double elapsedAlert = demo ? Math.Max(0.0, now - _previewStart) : Math.Max(0.0, now - _alertStart);
+        double editRemaining = _editing ? Math.Max(0.0, _editUntil - now) : 0.0;
+        var frame = BannerPresentation.Compute(_engine.View(), _settings, demo, _editing, elapsedAlert, editRemaining);
+        RenderFrame(frame, reposition);
+        _lastRenderKey = BuildRenderKey(frame, _editing);
+    }
+
+    private void UpdateNormalizedPositionFromBounds()
+    {
+        _settings.HudX = Math.Clamp((Left - _screen.Left) / (double)Math.Max(1, _screen.Width - Width), 0.0, 1.0);
+        _settings.HudY = Math.Clamp((Top - _screen.Top) / (double)Math.Max(1, _screen.Height - Height), 0.0, 1.0);
     }
 
     internal void BeginPreview() => _previewStart = NowSeconds();
     internal void BeginMove() => _editUntil = NowSeconds() + EditDurationSeconds;
 
-    internal void FlushPositionIfDirty()
+    internal void FlushPositionIfDirty() => FlushLayoutIfDirty();
+
+    internal void FlushLayoutIfDirty()
     {
-        if (!_positionDirty) return;
-        double x = Math.Clamp((Left - _screen.Left) / (double)Math.Max(1, _screen.Width - Width), 0.0, 1.0);
-        double y = Math.Clamp((Top - _screen.Top) / (double)Math.Max(1, _screen.Height - Height), 0.0, 1.0);
+        if (!_layoutDirty && !_positionDirty) return;
+        UpdateNormalizedPositionFromBounds();
+        _layoutDirty = false;
         _positionDirty = false;
-        _settings.HudX = x;
-        _settings.HudY = y;
-        _engine.SavePosition(x, y);
+        _engine.SaveBannerLayout(_settings.HudX, _settings.HudY, _settings.FontSizePixels, _settings.BannerOpacity);
+        _revision = _engine.SettingsRevision;
     }
 
     internal void RenderForSmoke(BannerFrame frame, bool forceReposition = false)
@@ -159,6 +412,58 @@ internal sealed class BannerHudWindow : Form
         RefreshGameWindowBinding();
         _screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
         RenderFrame(frame, forceReposition || _needsPosition);
+    }
+
+    internal void SimulateEditDragForSmoke(Point clientStart, int deltaX, int deltaY)
+    {
+        RefreshGameWindowBinding();
+        _screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
+        _editing = true;
+        _editUntil = NowSeconds() + EditDurationSeconds;
+        if (IsHandleCreated)
+        {
+            HudHostHelper.SetClickThrough(Handle, false);
+        }
+
+        if (_surface.Size.IsEmpty)
+        {
+            ReRenderCurrentEditFrame(reposition: true);
+        }
+
+        _dragMode = ClassifyEditHit(ClientSize, clientStart);
+        if (_dragMode == BannerEditDragMode.None)
+            return;
+
+        _dragStartScreenPt = new Point(Left + clientStart.X, Top + clientStart.Y);
+        _dragStartBounds = Bounds;
+        _dragStartFontPixels = Math.Clamp(
+            _settings.FontSizePixels,
+            BannerPresentation.MinFontSizePixels,
+            BannerPresentation.MaxFontSizePixels);
+
+        ApplyDragDelta(new Point(_dragStartScreenPt.X + deltaX, _dragStartScreenPt.Y + deltaY));
+        _dragMode = BannerEditDragMode.None;
+        FlushLayoutIfDirty();
+    }
+
+    internal void SimulateEditWheelForSmoke(int wheelDelta, bool ctrlDown)
+    {
+        RefreshGameWindowBinding();
+        _screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
+        _editing = true;
+        _editUntil = NowSeconds() + EditDurationSeconds;
+        if (IsHandleCreated)
+        {
+            HudHostHelper.SetClickThrough(Handle, false);
+        }
+
+        if (_surface.Size.IsEmpty)
+        {
+            ReRenderCurrentEditFrame(reposition: true);
+        }
+
+        ApplyEditWheel(wheelDelta, ctrlDown);
+        FlushLayoutIfDirty();
     }
 
     private void RefreshGameWindowBinding()
@@ -183,6 +488,24 @@ internal sealed class BannerHudWindow : Form
         _engine.Report(_captureStatus);
     }
 
+    private void ClearSurfaceToTransparent()
+    {
+        _surface.Resize(4, 4);
+        var clearGraphics = _surface.Graphics!;
+        clearGraphics.CompositingMode = CompositingMode.SourceCopy;
+        clearGraphics.Clear(Color.Transparent);
+        clearGraphics.Flush();
+        if (IsHandleCreated)
+        {
+            _surface.Present(Handle, Location);
+        }
+
+        _lastRenderKey = "";
+    }
+
+    private static string BuildRenderKey(BannerFrame frame, bool editing) =>
+        $"{frame.PrimaryText}|{frame.SecondaryText}|{frame.FontSizePixels}|{frame.FlashOn}|{frame.TextColorArgb}|{frame.BackgroundColorArgb}|{frame.BorderColorArgb}|{editing}";
+
     internal void TickFrame(double now)
     {
         if (IsDisposed || Disposing) return;
@@ -191,14 +514,24 @@ internal sealed class BannerHudWindow : Form
         {
             RefreshGameWindowBinding();
             bool editing = now < _editUntil;
-            if (_positionDirty && (!editing || now - _lastMove > 0.5))
+            if ((_layoutDirty || _positionDirty)
+                && _dragMode == BannerEditDragMode.None
+                && (!editing || now - _lastMove > 0.5))
             {
-                FlushPositionIfDirty();
+                FlushLayoutIfDirty();
             }
 
             if (editing != _editing)
             {
                 _editing = editing;
+                if (!editing && _dragMode != BannerEditDragMode.None)
+                {
+                    _dragMode = BannerEditDragMode.None;
+                    Capture = false;
+                    Cursor = Cursors.Default;
+                    FlushLayoutIfDirty();
+                }
+
                 _lastRenderKey = "";
                 if (IsHandleCreated)
                 {
@@ -212,7 +545,7 @@ internal sealed class BannerHudWindow : Form
                 _settings = _engine.GetSettings();
                 _revision = revision;
                 _lastRenderKey = "";
-                if (!_editing && !_positionDirty)
+                if (!_editing && !_positionDirty && !_layoutDirty)
                 {
                     _needsPosition = true;
                 }
@@ -228,7 +561,7 @@ internal sealed class BannerHudWindow : Form
                 if (screen != _screen)
                 {
                     _screen = screen;
-                    if (!_editing && !_positionDirty)
+                    if (!_editing && !_positionDirty && !_layoutDirty)
                     {
                         _needsPosition = true;
                     }
@@ -263,19 +596,27 @@ internal sealed class BannerHudWindow : Form
             bool modeAllowsLive = _settings.PluginEnabled && _settings.HudEnabled && live.Mode != TrackingMode.Off;
             bool display = frame.Visible && (demo || editing || (modeAllowsLive && foreground));
 
-            _status(_captureStatus + (editing ? " • drag banner now" : display ? " • HUD visible" : " • HUD hidden"));
+            string stateSuffix = editing
+                ? " • drag/resize banner now"
+                : display
+                    ? " • HUD visible"
+                    : (!_settings.HudEnabled && !demo)
+                        ? " • Banner disabled"
+                        : " • HUD hidden";
+            _status(_captureStatus + stateSuffix);
 
             if (!display)
             {
                 if (Visible)
                 {
+                    ClearSurfaceToTransparent();
                     Hide();
                 }
 
                 return;
             }
 
-            string renderKey = $"{frame.PrimaryText}|{frame.SecondaryText}|{frame.FontSizePixels}|{frame.FlashOn}|{frame.TextColorArgb}|{frame.BackgroundColorArgb}|{frame.BorderColorArgb}";
+            string renderKey = BuildRenderKey(frame, _editing);
             if (renderKey != _lastRenderKey || _needsPosition)
             {
                 RenderFrame(frame, _needsPosition);
@@ -311,16 +652,7 @@ internal sealed class BannerHudWindow : Form
 
         if (!frame.Visible)
         {
-            _surface.Resize(4, 4);
-            var clearGraphics = _surface.Graphics!;
-            clearGraphics.CompositingMode = CompositingMode.SourceCopy;
-            clearGraphics.Clear(Color.Transparent);
-            clearGraphics.Flush();
-            if (IsHandleCreated)
-            {
-                _surface.Present(Handle, Location);
-            }
-
+            ClearSurfaceToTransparent();
             _needsPosition = false;
             return;
         }
@@ -328,7 +660,8 @@ internal sealed class BannerHudWindow : Form
         string primaryText = string.IsNullOrWhiteSpace(frame.PrimaryText) ? " " : frame.PrimaryText;
         string secondaryText = frame.SecondaryText ?? "";
         int primaryPixels = Math.Clamp(frame.FontSizePixels, BannerPresentation.MinFontSizePixels, BannerPresentation.MaxFontSizePixels);
-        int secondaryPixels = Math.Clamp((int)Math.Round(primaryPixels * 0.42), 14, 44);
+        double scale = primaryPixels / 56.0;
+        int secondaryPixels = Math.Clamp((int)Math.Round(primaryPixels * 0.42), 12, 58);
         bool hasSecondary = !string.IsNullOrWhiteSpace(secondaryText);
 
         using var primaryPath = new GraphicsPath();
@@ -350,13 +683,13 @@ internal sealed class BannerHudWindow : Form
                 secondaryBounds = secondaryPath.GetBounds();
             }
 
-            const int padX = 28;
-            const int padY = 16;
-            const int lineGap = 8;
-            const int borderThickness = 4;
+            int padX = Math.Clamp((int)Math.Round(28 * scale), 12, 64);
+            int padY = Math.Clamp((int)Math.Round(16 * scale), 8, 40);
+            int lineGap = Math.Clamp((int)Math.Round(8 * scale), 4, 20);
+            int borderThickness = Math.Clamp((int)Math.Round(4 * scale), 2, 8);
 
             float contentWidth = Math.Max(primaryBounds.Width, hasSecondary ? secondaryBounds.Width : 0f);
-            int minBannerWidth = primaryPixels >= 36 ? 420 : 280;
+            int minBannerWidth = Math.Clamp((int)Math.Round(420 * scale), 180, 960);
             int width = Math.Max(minBannerWidth, (int)Math.Ceiling(contentWidth) + (padX * 2));
             int height = (int)Math.Ceiling(primaryBounds.Height) + (padY * 2) + (hasSecondary ? (int)Math.Ceiling(secondaryBounds.Height) + lineGap : 0);
 
@@ -422,14 +755,21 @@ internal sealed class BannerHudWindow : Form
                 g.DrawRectangle(borderPen, half, half, width - borderThickness, height - borderThickness);
             }
 
-            using (var outline = new Pen(Color.FromArgb(225, 0, 0, 0), 3.0f) { LineJoin = LineJoin.Round })
+            if (_editing)
+            {
+                DrawResizeGrips(g, width, height, borderThickness);
+            }
+
+            float primaryOutlineWidth = Math.Clamp((float)(3.0 * scale), 1.8f, 5.5f);
+            float subOutlineWidth = Math.Clamp((float)(2.0 * scale), 1.4f, 3.8f);
+            using (var outline = new Pen(Color.FromArgb(225, 0, 0, 0), primaryOutlineWidth) { LineJoin = LineJoin.Round })
             using (var fill = new SolidBrush(Color.FromArgb(frame.TextColorArgb)))
             {
                 g.DrawPath(outline, primaryPath);
                 g.FillPath(fill, primaryPath);
                 if (secondaryPath is not null)
                 {
-                    using var subOutline = new Pen(Color.FromArgb(200, 0, 0, 0), 2.0f) { LineJoin = LineJoin.Round };
+                    using var subOutline = new Pen(Color.FromArgb(200, 0, 0, 0), subOutlineWidth) { LineJoin = LineJoin.Round };
                     g.DrawPath(subOutline, secondaryPath);
                     g.FillPath(fill, secondaryPath);
                 }
@@ -445,6 +785,20 @@ internal sealed class BannerHudWindow : Form
         {
             secondaryPath?.Dispose();
         }
+    }
+
+    private static void DrawResizeGrips(Graphics g, int width, int height, int borderThickness)
+    {
+        float inset = borderThickness + 3f;
+        float arm = Math.Clamp(Math.Min(width, height) / 5f, 10f, 18f);
+        float right = width - inset;
+        float bottom = height - inset;
+
+        using var gripPen = new Pen(Color.FromArgb(245, 165, 225, 255), 2.5f) { LineJoin = LineJoin.Miter };
+        g.DrawLines(gripPen, new[] { new PointF(inset, inset + arm), new PointF(inset, inset), new PointF(inset + arm, inset) });
+        g.DrawLines(gripPen, new[] { new PointF(right - arm, inset), new PointF(right, inset), new PointF(right, inset + arm) });
+        g.DrawLines(gripPen, new[] { new PointF(inset, bottom - arm), new PointF(inset, bottom), new PointF(inset + arm, bottom) });
+        g.DrawLines(gripPen, new[] { new PointF(right - arm, bottom), new PointF(right, bottom), new PointF(right, bottom - arm) });
     }
 
     private static double NowSeconds() => Stopwatch.GetTimestamp() / TimestampFrequency;

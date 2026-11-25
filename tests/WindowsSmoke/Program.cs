@@ -53,53 +53,142 @@ internal static class Program
         if (runtimeVersion != pluginAssembly.GetName().Version)
             throw new Exception("Runtime Version disagrees with assembly version");
 
-        object ui = pluginType.GetMethod("GetPluginUI")!.Invoke(plugin, null)!;
-        Type uiContract = sdk.GetType("VoK.Sdk.Plugins.IPluginUI")!;
-        using var form = (Form)uiContract.GetProperty("UserInterfaceForm")!.GetValue(ui)!;
+        // Verify Wine guard is strictly false on Windows runtime.
+        Type hudHostHelperType = pluginAssembly.GetType("VoK.HealersHelper.HudHostHelper")!;
+        bool isWine = (bool)hudHostHelperType.GetField("IsWineRuntime", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(null)!;
+        if (isWine)
+            throw new Exception("HudHostHelper.IsWineRuntime must be false on native Windows");
 
-        // 1. Verify true 380px minimum-width layout with visible controls BEFORE host toolbar exists.
-        form.Size = form.MinimumSize;
-        form.Show();
-        Application.DoEvents();
-        form.PerformLayout();
-        if (form.Width != form.MinimumSize.Width)
-            throw new Exception($"Expected initial minimum width {form.MinimumSize.Width}, got {form.Width}");
-        int checkedAt380 = CheckLayoutControls(form, form);
-        if (checkedAt380 < 11)
-            throw new Exception($"Expected >= 11 visible controls checked at 380px, checked {checkedAt380}");
-
-        // 2. Create synthetic 720px toolbar host and verify FitToolbarWidth expansion.
-        using var host = new Form { Width = 400, Height = 400 };
-        var strip = new Panel { Width = 720, Height = 45 };
-        strip.Controls.Add(new PictureBox { Name = (string)pluginType.GetProperty("Name")!.GetValue(plugin)!, Left = 680, Width = 36 });
-        host.Controls.Add(strip);
-        host.Show();
-
-        form.Hide();
-        form.Show();
-        Application.DoEvents();
-        form.PerformLayout();
-        if (form.Width < strip.Width)
-            throw new Exception($"Plugin form width {form.Width} < host toolbar strip width {strip.Width}");
-        int checkedAt720 = CheckLayoutControls(form, form);
-        if (checkedAt720 < 11)
-            throw new Exception($"Expected >= 11 visible controls checked at 720px, checked {checkedAt720}");
-
-        var badge = (Label)form.Controls.Find("PluginStateLabel", true).Single();
-        var savedLabel = (Label)form.Controls.Find("PeopleSavedLabel", true).Single();
-        var gamificationLabel = (Label)form.Controls.Find("GamificationSummaryLabel", true).Single();
-        if (!badge.Visible || !savedLabel.Visible || !gamificationLabel.Visible
-            || form.Controls.Find("MoveStatusButton", true).Length != 1
-            || form.Controls.Find("CopyScorecardButton", true).Length != 1
-            || form.Controls.Find("ResetSavedButton", true).Length != 1)
+        string offlineFolder = Path.Combine(Path.GetTempPath(), "healers-helper-offline-smoke-" + Guid.NewGuid());
+        Directory.CreateDirectory(offlineFolder);
+        try
         {
-            throw new Exception("Expected PluginStateLabel, PeopleSavedLabel, GamificationSummaryLabel, MoveStatusButton, CopyScorecardButton, and ResetSavedButton on panel");
+            PropertyInfo settingsFolderProp = pluginType.GetProperty("SettingsFolder", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
+            settingsFolderProp.SetValue(plugin, offlineFolder);
+
+            object ui = pluginType.GetMethod("GetPluginUI")!.Invoke(plugin, null)!;
+            Type uiContract = sdk.GetType("VoK.Sdk.Plugins.IPluginUI")!;
+            using var form = (Form)uiContract.GetProperty("UserInterfaceForm")!.GetValue(ui)!;
+
+            // 1. Verify true 380px minimum-width layout with visible controls BEFORE host toolbar exists.
+            form.Size = form.MinimumSize;
+            form.Show();
+            Application.DoEvents();
+            form.PerformLayout();
+            if (form.Width != form.MinimumSize.Width)
+                throw new Exception($"Expected initial minimum width {form.MinimumSize.Width}, got {form.Width}");
+            int checkedAt380 = CheckLayoutControls(form, form);
+            if (checkedAt380 < 12)
+                throw new Exception($"Expected >= 12 visible controls checked at 380px, checked {checkedAt380}");
+
+            // 2. Create synthetic 720px toolbar host and verify FitToolbarWidth expansion.
+            using var host = new Form { Width = 400, Height = 400 };
+            var strip = new Panel { Width = 720, Height = 45 };
+            strip.Controls.Add(new PictureBox { Name = (string)pluginType.GetProperty("Name")!.GetValue(plugin)!, Left = 680, Width = 36 });
+            host.Controls.Add(strip);
+            host.Show();
+
+            form.Hide();
+            form.Show();
+            Application.DoEvents();
+            form.PerformLayout();
+            if (form.Width < strip.Width)
+                throw new Exception($"Plugin form width {form.Width} < host toolbar strip width {strip.Width}");
+            int checkedAt720 = CheckLayoutControls(form, form);
+            if (checkedAt720 < 12)
+                throw new Exception($"Expected >= 12 visible controls checked at 720px, checked {checkedAt720}");
+
+            var badge = (Label)form.Controls.Find("PluginStateLabel", true).Single();
+            var bannerBadge = (Label)form.Controls.Find("BannerStateLabel", true).Single();
+            var savedLabel = (Label)form.Controls.Find("PeopleSavedLabel", true).Single();
+            var gamificationLabel = (Label)form.Controls.Find("GamificationSummaryLabel", true).Single();
+            var compatNote = (Label)form.Controls.Find("CompatibilityNoteLabel", true).Single();
+            var togglePluginBtn = (Button)form.Controls.Find("TogglePluginButton", true).Single();
+            var toggleBannerBtn = (Button)form.Controls.Find("ToggleBannerButton", true).Single();
+            var moveBannerBtn = (Button)form.Controls.Find("MoveBannerButton", true).Single();
+
+            if (!badge.Visible || !bannerBadge.Visible || !savedLabel.Visible || !gamificationLabel.Visible || !compatNote.Visible
+                || moveBannerBtn.Text != "Move / Resize Banner"
+                || form.Controls.Find("MoveStatusButton", true).Length != 1
+                || form.Controls.Find("CopyScorecardButton", true).Length != 1
+                || form.Controls.Find("ResetSavedButton", true).Length != 1)
+            {
+                throw new Exception("Expected PluginStateLabel, BannerStateLabel, PeopleSavedLabel, GamificationSummaryLabel, CompatibilityNoteLabel, ToggleBannerButton, Move / Resize Banner, MoveStatusButton, CopyScorecardButton, and ResetSavedButton on panel");
+            }
+
+            VerifyCompatibilityNoteLabel(compatNote, form);
+
+            // 3. Verify offline active/inactive & banner ON/OFF persistence BEFORE DDO/engine connects!
+            togglePluginBtn.PerformClick();
+            toggleBannerBtn.PerformClick();
+            Application.DoEvents();
+            form.PerformLayout();
+            if (badge.Text != "Plugin: OFF" || bannerBadge.Text != "Banner: OFF" || toggleBannerBtn.Text != "Banner: OFF")
+                throw new Exception($"Offline toggle did not update labels: {badge.Text} / {bannerBadge.Text} / {toggleBannerBtn.Text}");
+            _ = CheckLayoutControls(form, form);
+
+            string offlineJsonPath = Path.Combine(offlineFolder, "healers-helper.json");
+            using (var doc = JsonDocument.Parse(File.ReadAllText(offlineJsonPath)))
+            {
+                if (doc.RootElement.GetProperty("PluginEnabled").GetBoolean() != false
+                    || doc.RootElement.GetProperty("HudEnabled").GetBoolean() != false)
+                {
+                    throw new Exception("Offline panel toggles did not persist PluginEnabled=false and HudEnabled=false to healers-helper.json");
+                }
+            }
+
+            // Fresh plugin + UI instance must reload persisted Plugin: OFF and Banner: OFF immediately!
+            object pluginReloaded = Activator.CreateInstance(pluginType)!;
+            settingsFolderProp.SetValue(pluginReloaded, offlineFolder);
+            object uiReloaded = pluginType.GetMethod("GetPluginUI")!.Invoke(pluginReloaded, null)!;
+            try
+            {
+                using var formReloaded = (Form)uiContract.GetProperty("UserInterfaceForm")!.GetValue(uiReloaded)!;
+                formReloaded.Show();
+                Application.DoEvents();
+                var reloadedBadge = (Label)formReloaded.Controls.Find("PluginStateLabel", true).Single();
+                var reloadedBanner = (Label)formReloaded.Controls.Find("BannerStateLabel", true).Single();
+                if (reloadedBadge.Text != "Plugin: OFF" || reloadedBanner.Text != "Banner: OFF")
+                    throw new Exception($"Reloaded offline UI did not restore last state: {reloadedBadge.Text} / {reloadedBanner.Text}");
+            }
+            finally
+            {
+                if (uiReloaded is IDisposable dispReloaded) dispReloaded.Dispose();
+            }
+
+            // Flip offline back to ON before attaching live engine.
+            togglePluginBtn.PerformClick();
+            toggleBannerBtn.PerformClick();
+
+            CheckSettingsDialogGamificationAndHuds(pluginAssembly, pluginType, plugin, form);
+
+            if (ui is IDisposable disposableUi)
+                disposableUi.Dispose();
+        }
+        finally
+        {
+            if (Directory.Exists(offlineFolder))
+                Directory.Delete(offlineFolder, true);
+        }
+    }
+
+    private static void VerifyCompatibilityNoteLabel(Label label, Form topForm)
+    {
+        string text = label.Text ?? "";
+        if (!label.Visible
+            || !text.Contains("Tested & working on live DDO + Lossless Scaling", StringComparison.Ordinal)
+            || !text.Contains("not guaranteed", StringComparison.Ordinal)
+            || !text.Contains("Linux", StringComparison.Ordinal)
+            || !text.Contains("untested", StringComparison.Ordinal))
+        {
+            throw new Exception($"Unexpected compatibility note label '{label.Name}': {text}");
         }
 
-        CheckSettingsDialogGamificationAndHuds(pluginAssembly, pluginType, plugin, form);
-
-        if (ui is IDisposable disposableUi)
-            disposableUi.Dispose();
+        Rectangle inForm = topForm.RectangleToClient(label.Parent!.RectangleToScreen(label.Bounds));
+        if (inForm.Left < 0 || inForm.Right > topForm.ClientSize.Width)
+        {
+            throw new Exception($"Compatibility label '{label.Name}' clips horizontally ({inForm}) in form width {topForm.ClientSize.Width}");
+        }
     }
 
     private static void CheckSettingsDialogGamificationAndHuds(Assembly assembly, Type pluginType, object plugin, Form controlForm)
@@ -151,13 +240,13 @@ internal static class Program
                 5)!;
             Set("_view", idleView);
 
-            // Attach engine to plugin so HealerControlForm exercises live gamification summary & dynamic tooltips!
             pluginType.GetField("_engine", fields)!.SetValue(plugin, engine);
-            Console.WriteLine("PASS Windows plugin ZIP load, IDdoPlugin metadata, and 380px/720px toolbar UI layout");
+            Console.WriteLine("PASS Windows plugin ZIP load, IDdoPlugin metadata, offline last-state persistence, and 380px/720px toolbar UI layout");
 
-            // 1. SettingsDialog at minimum size + Reset Defaults + 6-hotkey duplicate check + live-stat preservation + round-trip
+            // 1. SettingsDialog at minimum size + 7 hotkeys + custom colors + opacity 20..255 + dirty-tracking + round-trip
             Type dialogType = assembly.GetType("VoK.HealersHelper.SettingsDialog")!;
             MethodInfo processCmdKey = dialogType.GetMethod("ProcessCmdKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            MethodInfo setBannerColorHex = dialogType.GetMethod("SetBannerColorHex", BindingFlags.Instance | BindingFlags.NonPublic)!;
             bool SendDialogKey(Form dlg, Keys keys)
             {
                 object[] callArgs = { new Message(), keys };
@@ -170,10 +259,12 @@ internal static class Program
                 dialog.Size = dialog.MinimumSize;
                 Application.DoEvents();
                 dialog.PerformLayout();
-                if (CheckLayoutControls(dialog, dialog) < 20)
-                    throw new Exception("SettingsDialog checked fewer than 20 visible controls at MinimumSize");
+                if (CheckLayoutControls(dialog, dialog) < 28)
+                    throw new Exception("SettingsDialog checked fewer than 28 visible controls at MinimumSize");
 
-                var pluginEnabledBox = (CheckBox)dialog.Controls.Find("PluginEnabledCheckBox", true).Single();
+                var lsNote = (Label)dialog.Controls.Find("LsCompatibilityNoteLabel", true).Single();
+                VerifyCompatibilityNoteLabel(lsNote, dialog);
+
                 var includeSelfBox = (CheckBox)dialog.Controls.Find("IncludeSelfCheckBox", true).Single();
                 var suppressTownBox = (CheckBox)dialog.Controls.Find("SuppressInTownCheckBox", true).Single();
                 var maxAlertNumeric = (NumericUpDown)dialog.Controls.Find("MaxAlertSecondsNumeric", true).Single();
@@ -182,11 +273,15 @@ internal static class Program
                 var minHealNumeric = (NumericUpDown)dialog.Controls.Find("MinHealDeltaNumeric", true).Single();
                 var showSavedNoticeBox = (CheckBox)dialog.Controls.Find("ShowSavedNoticeCheckBox", true).Single();
                 var showRankBox = (CheckBox)dialog.Controls.Find("ShowRankOnStatusHudCheckBox", true).Single();
+                var hudEnabledBox = (CheckBox)dialog.Controls.Find("HudEnabledCheckBox", true).Single();
                 var bannerOpacityNumeric = (NumericUpDown)dialog.Controls.Find("BannerOpacityNumeric", true).Single();
                 var flashBannerBox = (CheckBox)dialog.Controls.Find("FlashBannerCheckBox", true).Single();
                 var statusHudEnabledBox = (CheckBox)dialog.Controls.Find("StatusHudEnabledCheckBox", true).Single();
                 var statusFontBox = (TextBox)dialog.Controls.Find("StatusFontSizeTextBox", true).Single();
+                var lowBgColorBtn = (Button)dialog.Controls.Find("LowHpBgColorButton", true).Single();
+                var resetColorsBtn = (Button)dialog.Controls.Find("ResetBannerColorsButton", true).Single();
                 var toggleHotkeyBox = (TextBox)dialog.Controls.Find("TogglePluginHotkeyBox", true).Single();
+                var toggleBannerHotkeyBox = (TextBox)dialog.Controls.Find("ToggleBannerHotkeyBox", true).Single();
                 var focusHotkeyBox = (TextBox)dialog.Controls.Find("FocusTargetHotkeyBox", true).Single();
                 var resetSavedHotkeyBox = (TextBox)dialog.Controls.Find("ResetSavedHotkeyBox", true).Single();
                 var copyCardHotkeyBox = (TextBox)dialog.Controls.Find("CopyScorecardHotkeyBox", true).Single();
@@ -200,21 +295,12 @@ internal static class Program
                 var statusLabel = (Label)dialog.Controls.Find("StatusLabel", true).Single();
                 var saveBtn = (Button)dialog.Controls.Find("SaveButton", true).Single();
 
+                if (!hudEnabledBox.Visible || bannerOpacityNumeric.Minimum != 20m)
+                    throw new Exception("Expected visible HudEnabledCheckBox and BannerOpacityNumeric Minimum=20");
                 if (!restorePrevBox.Visible || !restoreDelayNumeric.Visible || !restorePrevBox.Checked || restoreDelayNumeric.Value != 0.2m)
                     throw new Exception("Expected visible RestorePreviousTargetCheckBox (true) and RestoreTargetDelayNumeric (0.2s) defaults");
-
-                Rectangle restoreBoxInDialog = dialog.RectangleToClient(restorePrevBox.Parent!.RectangleToScreen(restorePrevBox.Bounds));
-                Rectangle restoreDelayInDialog = dialog.RectangleToClient(restoreDelayNumeric.Parent!.RectangleToScreen(restoreDelayNumeric.Bounds));
-                if (!restorePrevBox.Parent.ClientRectangle.Contains(restorePrevBox.Bounds)
-                    || !restoreDelayNumeric.Parent.ClientRectangle.Contains(restoreDelayNumeric.Bounds)
-                    || restoreBoxInDialog.Left < 0 || restoreBoxInDialog.Right > dialog.ClientSize.Width
-                    || restoreDelayInDialog.Left < 0 || restoreDelayInDialog.Right > dialog.ClientSize.Width)
-                {
-                    throw new Exception($"Restore controls clipped at 640x560: check={restoreBoxInDialog}, delay={restoreDelayInDialog}, client={dialog.ClientSize}");
-                }
-
-                if (toggleHotkeyBox.Text != "Ctrl+Shift+K" || copyCardHotkeyBox.Text != "None")
-                    throw new Exception($"Unexpected default hotkey texts: {toggleHotkeyBox.Text} / {copyCardHotkeyBox.Text}");
+                if (toggleHotkeyBox.Text != "Ctrl+Shift+K" || copyCardHotkeyBox.Text != "None" || toggleBannerHotkeyBox.Text != "None")
+                    throw new Exception($"Unexpected default hotkey texts: {toggleHotkeyBox.Text} / {copyCardHotkeyBox.Text} / {toggleBannerHotkeyBox.Text}");
 
                 // Escape inside hotkey box cancels recording without closing SettingsDialog.
                 dialog.ActiveControl = focusHotkeyBox;
@@ -222,31 +308,48 @@ internal static class Program
                 if (!SendDialogKey(dialog, Keys.Escape) || !dialog.Visible || focusHotkeyBox.Text != "Ctrl+Shift+H")
                     throw new Exception("Escape in hotkey recorder closed dialog or failed to restore binding");
 
-                // Unmodified Backspace clears hotkey to None, and Reset Defaults restores all 4 defaults + clears 2 optional hotkeys.
+                // Unmodified Backspace clears hotkey to None, and Reset Defaults restores all 4 defaults + clears 3 optional hotkeys.
                 dialog.ActiveControl = focusHotkeyBox;
                 if (!SendDialogKey(dialog, Keys.Back) || focusHotkeyBox.Text != "None")
                     throw new Exception($"Unmodified Backspace must clear hotkey to None, got '{focusHotkeyBox.Text}'");
-                dialog.ActiveControl = copyCardHotkeyBox;
-                SendDialogKey(dialog, Keys.F9 | Keys.Control);
+                dialog.ActiveControl = toggleBannerHotkeyBox;
+                SendDialogKey(dialog, Keys.F8 | Keys.Control);
                 resetHotkeysBtn.PerformClick();
-                if (focusHotkeyBox.Text != "Ctrl+Shift+H" || copyCardHotkeyBox.Text != "None" || resetSavedHotkeyBox.Text != "None")
+                if (focusHotkeyBox.Text != "Ctrl+Shift+H" || copyCardHotkeyBox.Text != "None" || resetSavedHotkeyBox.Text != "None" || toggleBannerHotkeyBox.Text != "None")
                     throw new Exception("Reset Defaults button did not restore default chords and clear optional hotkeys");
 
-                // Duplicate hotkey on optional CopyScorecardHotkeyBox (Ctrl+Shift+K == TogglePluginHotkey) must block Save.
-                dialog.ActiveControl = copyCardHotkeyBox;
-                if (!SendDialogKey(dialog, Keys.K | Keys.Control | Keys.Shift) || copyCardHotkeyBox.Text != "Ctrl+Shift+K")
-                    throw new Exception("Failed to record Ctrl+Shift+K into CopyScorecardHotkeyBox");
+                // Duplicate hotkey on optional ToggleBannerHotkeyBox (Ctrl+Shift+K == TogglePluginHotkey) must block Save.
+                dialog.ActiveControl = toggleBannerHotkeyBox;
+                if (!SendDialogKey(dialog, Keys.K | Keys.Control | Keys.Shift) || toggleBannerHotkeyBox.Text != "Ctrl+Shift+K")
+                    throw new Exception("Failed to record Ctrl+Shift+K into ToggleBannerHotkeyBox");
                 saveBtn.PerformClick();
                 if (!dialog.Visible || !statusLabel.Text.Contains("Duplicate hotkey", StringComparison.Ordinal))
-                    throw new Exception("Duplicate hotkey on optional CopyScorecardHotkeyBox was not rejected");
+                    throw new Exception("Duplicate hotkey on optional ToggleBannerHotkeyBox was not rejected");
 
-                // Assign distinct custom CopyScorecardHotkey (Ctrl+Shift+C) and ResetSavedHotkey (Ctrl+Shift+R) and configure extended settings.
+                // Assign distinct custom hotkeys for CopyScorecard, ResetSaved, and ToggleBanner.
                 dialog.ActiveControl = copyCardHotkeyBox;
                 SendDialogKey(dialog, Keys.C | Keys.Control | Keys.Shift);
                 dialog.ActiveControl = resetSavedHotkeyBox;
                 SendDialogKey(dialog, Keys.R | Keys.Control | Keys.Shift);
+                dialog.ActiveControl = toggleBannerHotkeyBox;
+                SendDialogKey(dialog, Keys.B | Keys.Control | Keys.Shift);
 
-                pluginEnabledBox.Checked = true;
+                // Verify color swatch customization + Reset Colors button + re-apply custom colors without clipping.
+                setBannerColorHex.Invoke(dialog, new object[] { "LowHpBgColorButton", "#123456" });
+                if (!lowBgColorBtn.Text.Contains("#123456", StringComparison.Ordinal))
+                    throw new Exception("SetBannerColorHex did not update LowHpBgColorButton label");
+                resetColorsBtn.PerformClick();
+                if (!lowBgColorBtn.Text.Contains("#B84200", StringComparison.Ordinal))
+                    throw new Exception("Reset Colors button did not restore default #B84200");
+
+                setBannerColorHex.Invoke(dialog, new object[] { "LowHpBgColorButton", "#123456" });
+                setBannerColorHex.Invoke(dialog, new object[] { "LowHpBorderColorButton", "#654321" });
+                setBannerColorHex.Invoke(dialog, new object[] { "CriticalBgColorButton", "#7A0019" });
+                setBannerColorHex.Invoke(dialog, new object[] { "CriticalBorderColorButton", "#FFCC33" });
+                setBannerColorHex.Invoke(dialog, new object[] { "BannerTextColorButton", "#F0F4FF" });
+                setBannerColorHex.Invoke(dialog, new object[] { "FlashAltBgColorButton", "#10141C" });
+                _ = CheckLayoutControls(dialog, dialog);
+
                 includeSelfBox.Checked = false;
                 suppressTownBox.Checked = true;
                 maxAlertNumeric.Value = 15;
@@ -255,7 +358,7 @@ internal static class Program
                 minHealNumeric.Value = 12;
                 showSavedNoticeBox.Checked = false;
                 showRankBox.Checked = true;
-                bannerOpacityNumeric.Value = 200;
+                bannerOpacityNumeric.Value = 35; // Exercises 20..255 range below old 80 floor!
                 flashBannerBox.Checked = false;
                 statusHudEnabledBox.Checked = true;
                 statusFontBox.Text = "16";
@@ -266,7 +369,11 @@ internal static class Program
                 restorePrevBox.Checked = false;
                 restoreDelayNumeric.Value = 0.8m;
 
-                // Simulate live gamification increments while SettingsDialog is open!
+                // Simulate background hotkey toggles of PluginEnabled, HudEnabled, and Mode + live stats while dialog is open!
+                // Because those 3 controls were NOT touched in the dialog, SaveAndClose must preserve their live state!
+                settingsType.GetProperty("PluginEnabled")!.SetValue(settings, false);
+                settingsType.GetProperty("HudEnabled")!.SetValue(settings, false);
+                settingsType.GetProperty("Mode")!.SetValue(settings, Enum.Parse(modeEnum, "SinglePlayer"));
                 settingsType.GetProperty("PeopleSaved")!.SetValue(settings, 18);
                 settingsType.GetProperty("CurrentSaveStreak")!.SetValue(settings, 6);
                 settingsType.GetProperty("BestSaveStreak")!.SetValue(settings, 11);
@@ -285,9 +392,18 @@ internal static class Program
             using (var saved = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, "healers-helper.json"))))
             {
                 var root = saved.RootElement;
-                if (root.GetProperty("FontSizePixels").GetInt32() != 68
+                if (root.GetProperty("PluginEnabled").GetBoolean() != false
+                    || root.GetProperty("HudEnabled").GetBoolean() != false
+                    || root.GetProperty("Mode").GetString() != "SinglePlayer"
+                    || root.GetProperty("FontSizePixels").GetInt32() != 68
                     || root.GetProperty("StatusFontSizePixels").GetInt32() != 16
-                    || root.GetProperty("BannerOpacity").GetInt32() != 200
+                    || root.GetProperty("BannerOpacity").GetInt32() != 35
+                    || root.GetProperty("LowHpBgHex").GetString() != "#123456"
+                    || root.GetProperty("LowHpBorderHex").GetString() != "#654321"
+                    || root.GetProperty("CriticalBgHex").GetString() != "#7A0019"
+                    || root.GetProperty("CriticalBorderHex").GetString() != "#FFCC33"
+                    || root.GetProperty("BannerTextHex").GetString() != "#F0F4FF"
+                    || root.GetProperty("FlashAltBgHex").GetString() != "#10141C"
                     || root.GetProperty("FlashBanner").GetBoolean() != false
                     || root.GetProperty("IncludeSelfInPartyMode").GetBoolean() != false
                     || root.GetProperty("SuppressAlertsInTown").GetBoolean() != true
@@ -308,22 +424,26 @@ internal static class Program
                     || root.GetProperty("RestorePreviousTargetAfterHeal").GetBoolean() != false
                     || Math.Abs(root.GetProperty("RestoreTargetDelaySeconds").GetDouble() - 0.8) > 0.001)
                 {
-                    throw new Exception("SettingsDialog save did not round-trip extended settings, target restore settings, and live gamification stats");
+                    throw new Exception("SettingsDialog save did not round-trip extended settings, custom colors, opacity 35, dirty-state preservation, and live gamification stats");
                 }
             }
 
             if (engineType.GetField("_restoreTracker", fields)!.GetValue(engine) is null)
                 throw new Exception("HealerEngine.Restore did not lazily initialize _restoreTracker on uninitialized smoke instance");
 
-            // Refresh HealerControlForm and verify dynamic hotkey tooltips reflect Ctrl+Shift+C / Ctrl+Shift+R!
+            // Re-enable PluginEnabled & HudEnabled via engine methods and verify dynamic tooltips!
+            engineType.GetMethod("TogglePluginEnabled")!.Invoke(engine, null);
+            engineType.GetMethod("ToggleBannerHud")!.Invoke(engine, null);
             controlForm.GetType().GetMethod("RefreshState", fields)!.Invoke(controlForm, null);
             var toolTip = (ToolTip)controlForm.GetType().GetProperty("ButtonToolTip", fields)!.GetValue(controlForm)!;
             var copyBtn = (Button)controlForm.Controls.Find("CopyScorecardButton", true).Single();
             var resetBtn = (Button)controlForm.Controls.Find("ResetSavedButton", true).Single();
+            var toggleBannerControlBtn = (Button)controlForm.Controls.Find("ToggleBannerButton", true).Single();
             if (!(toolTip.GetToolTip(copyBtn) ?? string.Empty).Contains("Ctrl+Shift+C", StringComparison.Ordinal)
-                || !(toolTip.GetToolTip(resetBtn) ?? string.Empty).Contains("Ctrl+Shift+R", StringComparison.Ordinal))
+                || !(toolTip.GetToolTip(resetBtn) ?? string.Empty).Contains("Ctrl+Shift+R", StringComparison.Ordinal)
+                || !(toolTip.GetToolTip(toggleBannerControlBtn) ?? string.Empty).Contains("Ctrl+Shift+B", StringComparison.Ordinal))
             {
-                throw new Exception("HealerControlForm tooltips did not dynamically reflect saved custom hotkeys");
+                throw new Exception("HealerControlForm tooltips did not dynamically reflect saved custom hotkeys (Ctrl+Shift+C/R/B)");
             }
 
             // Verify GetChatScorecard() and CopyChatScorecard() produce pure printable ASCII <= 185 chars
@@ -332,13 +452,7 @@ internal static class Program
                 throw new Exception($"Unexpected GetChatScorecard output ({card.Length}): {card}");
             _ = engineType.GetMethod("CopyChatScorecard")!.Invoke(engine, null);
 
-            // Verify TogglePluginEnabled() and ResetPeopleSaved() zeroing all gamification stats
-            engineType.GetMethod("TogglePluginEnabled")!.Invoke(engine, null);
-            var toggledView = engineType.GetMethod("View")!.Invoke(engine, null)!;
-            if ((bool)viewType.GetProperty("PluginEnabled")!.GetValue(toggledView)!)
-                throw new Exception("TogglePluginEnabled did not flip PluginEnabled to false");
-
-            engineType.GetMethod("TogglePluginEnabled")!.Invoke(engine, null);
+            // Verify ResetPeopleSaved() zeroes all gamification stats
             engineType.GetMethod("ResetPeopleSaved")!.Invoke(engine, null);
             var resetSettings = engineType.GetMethod("GetSettings")!.Invoke(engine, null)!;
             if ((int)settingsType.GetProperty("PeopleSaved")!.GetValue(resetSettings)! != 0
@@ -351,14 +465,15 @@ internal static class Program
                 throw new Exception("ResetPeopleSaved did not zero all persisted gamification stats");
             }
 
-            Console.WriteLine("PASS SettingsDialog 5-group layout, Reset Defaults, 6-hotkey validation, gamification preservation, dynamic tooltips, and ASCII scorecard");
+            Console.WriteLine("PASS SettingsDialog 5-group layout, 6 color pickers, opacity 20..255, dirty-tracking, 7-hotkey validation, dynamic tooltips, and ASCII scorecard");
 
-            // 2. BannerHudWindow layered native surface, styles, flash phases, and disposal
+            // 2. BannerHudWindow layered native surface, styles, flash phases, interactive resize/move/wheel, banner-disable, and disposal
             const long requiredEx = WsExTransparent | WsExToolWindow | WsExLayered | WsExNoActivate;
             Type hudType = assembly.GetType("VoK.HealersHelper.BannerHudWindow")!;
             Type cmdEnum = assembly.GetType("VoK.HealersHelper.HudCommand")!;
             object queue = Activator.CreateInstance(typeof(ConcurrentQueue<>).MakeGenericType(cmdEnum))!;
-            var hud = (Form)Activator.CreateInstance(hudType, engine, queue, new Action<string>(_ => { }))!;
+            string lastHudStatus = "";
+            var hud = (Form)Activator.CreateInstance(hudType, engine, queue, new Action<string>(s => lastHudStatus = s))!;
             Size bannerSize;
             try
             {
@@ -369,6 +484,10 @@ internal static class Program
 
                 Type frameType = assembly.GetType("VoK.HealersHelper.BannerFrame")!;
                 MethodInfo renderMethod = hudType.GetMethod("RenderForSmoke", fields)!;
+                MethodInfo dragSmoke = hudType.GetMethod("SimulateEditDragForSmoke", fields)!;
+                MethodInfo wheelSmoke = hudType.GetMethod("SimulateEditWheelForSmoke", fields)!;
+                MethodInfo tickFrame = hudType.GetMethod("TickFrame", fields)!;
+                MethodInfo beginPreview = hudType.GetMethod("BeginPreview", fields)!;
                 PropertyInfo surfaceProp = hudType.GetProperty("Surface", fields)!;
 
                 Color SampleCorner()
@@ -411,6 +530,37 @@ internal static class Program
                 if (hud.ClientSize != bannerSize || offColor.ToArgb() == onColor.ToArgb())
                     throw new Exception($"Flash off must keep dimensions and transition color ({onColor} -> {offColor})");
 
+                // Exercise interactive corner-drag resize + center move + wheel font resize + Ctrl+wheel opacity!
+                int preDragFont = (int)settingsType.GetProperty("FontSizePixels")!.GetValue(engineType.GetMethod("GetSettings")!.Invoke(engine, null)!)!;
+                Point bottomRightGrip = new(hud.ClientSize.Width - 5, hud.ClientSize.Height - 5);
+                dragSmoke.Invoke(hud, new object[] { bottomRightGrip, 120, 45 });
+                var afterCornerDrag = engineType.GetMethod("GetSettings")!.Invoke(engine, null)!;
+                int postDragFont = (int)settingsType.GetProperty("FontSizePixels")!.GetValue(afterCornerDrag)!;
+                if (postDragFont <= preDragFont)
+                    throw new Exception($"Expected corner drag to grow FontSizePixels ({preDragFont} -> {postDragFont})");
+
+                wheelSmoke.Invoke(hud, new object[] { 120, false }); // +2px font
+                wheelSmoke.Invoke(hud, new object[] { 240, true });  // +20 opacity (35 -> 55)
+                var afterWheel = engineType.GetMethod("GetSettings")!.Invoke(engine, null)!;
+                if ((int)settingsType.GetProperty("FontSizePixels")!.GetValue(afterWheel)! != Math.Min(140, postDragFont + 2)
+                    || (int)settingsType.GetProperty("BannerOpacity")!.GetValue(afterWheel)! != 55)
+                {
+                    throw new Exception("Wheel / Ctrl+Wheel gestures did not persist updated FontSizePixels and BannerOpacity");
+                }
+
+                // Verify full banner disable suppresses live alert while still permitting Preview Banner!
+                hudType.GetField("_editUntil", fields)!.SetValue(hud, double.NegativeInfinity);
+                engineType.GetMethod("ToggleBannerHud")!.Invoke(engine, null); // flips HudEnabled -> false
+                double liveNow = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+                tickFrame.Invoke(hud, new object[] { liveNow });
+                if (hud.Visible || !lastHudStatus.Contains("Banner disabled", StringComparison.Ordinal))
+                    throw new Exception($"Disabled banner must hide live window and report Banner disabled, got Visible={hud.Visible}, status='{lastHudStatus}'");
+                beginPreview.Invoke(hud, null);
+                double previewNow = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+                tickFrame.Invoke(hud, new object[] { previewNow + 0.1 });
+                if (!hud.Visible)
+                    throw new Exception("Preview Banner must still display on demand even when HudEnabled=false");
+
                 object frameHidden = Activator.CreateInstance(frameType, false, "", "", 72, false, 0, 0, 0)!;
                 renderMethod.Invoke(hud, new[] { frameHidden, false });
                 Color clearedColor = SampleCorner();
@@ -426,7 +576,7 @@ internal static class Program
             if (!hud.IsDisposed)
                 throw new Exception("BannerHudWindow did not dispose cleanly");
 
-            Console.WriteLine("PASS BannerHudWindow WS_EX styles (incl. TOOLWINDOW), huge banner DIB render, flash transitions, and disposal");
+            Console.WriteLine("PASS BannerHudWindow WS_EX styles, DIB render, interactive drag/resize/wheel/Ctrl+wheel, full banner disable, and disposal");
 
             // 3. StatusHudWindow compact DIB surface, WS_EX styles, OFF vs PARTY rendering, and disposal
             Type statusHudType = assembly.GetType("VoK.HealersHelper.StatusHudWindow")!;

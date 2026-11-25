@@ -5,11 +5,12 @@ namespace VoK.HealersHelper;
 internal readonly record struct RestoreCandidate(
     ulong TargetId,
     string TargetName,
-    int PartySlotIndex);
+    int PartySlotIndex,
+    ulong ExpectedCurrentTargetId = 0);
 
 // Pure portable state machine that remembers the player's prior target when
 // Healer's Helper switches selection to an injured ally, then emits a one-shot
-// restore candidate once that ally is healed and the configured delay elapses.
+// restore candidate once all watched allies are healthy and the delay elapses.
 internal sealed class TargetRestoreTracker
 {
     public const double SelectionSettleGraceSeconds = 0.8;
@@ -27,6 +28,37 @@ internal sealed class TargetRestoreTracker
     private double? _healedSince;
 
     public bool IsActive => _active;
+
+    public static bool IsPreviousTargetHealedOrGone(
+        WatchedMemberSnapshot[]? members,
+        ulong previousPlayerId,
+        int recoverThresholdPercent)
+    {
+        if (previousPlayerId == 0 || previousPlayerId == ulong.MaxValue)
+            return false;
+
+        if (members is null)
+            return true;
+
+        WatchedMemberSnapshot? prev = null;
+        for (int i = 0; i < members.Length; i++)
+        {
+            var m = members[i];
+            if (m is not null && m.Id == previousPlayerId)
+            {
+                prev = m;
+                break;
+            }
+        }
+
+        if (prev is null || !prev.Connected || prev.IsTrulyDead)
+            return true;
+
+        return !prev.IsDeadOrDown
+               && prev.MaxHitPoints > 0
+               && prev.HitPoints > 0
+               && prev.Percent >= recoverThresholdPercent;
+    }
 
     public void Reset()
     {
@@ -81,7 +113,9 @@ internal sealed class TargetRestoreTracker
         }
 
         if (priorSelectedId == _switchedPlayerId
-            || (!_settledOnSwitchedPlayer && (now - _switchedAt) <= SelectionSettleGraceSeconds))
+            || (!_settledOnSwitchedPlayer
+                && priorSelectedId == _originalTargetId
+                && (now - _switchedAt) <= SelectionSettleGraceSeconds))
         {
             _switchedPlayerId = switchedTo.Id;
             _preSwitchHp = switchedTo.HitPoints;
@@ -138,12 +172,9 @@ internal sealed class TargetRestoreTracker
         {
             _settledOnSwitchedPlayer = true;
         }
-        else if (_settledOnSwitchedPlayer)
-        {
-            Reset();
-            return null;
-        }
-        else if ((now - _switchedAt) > SelectionSettleGraceSeconds)
+        else if (_settledOnSwitchedPlayer
+                 || currentSelectedId != _originalTargetId
+                 || (now - _switchedAt) > SelectionSettleGraceSeconds)
         {
             Reset();
             return null;
@@ -184,23 +215,29 @@ internal sealed class TargetRestoreTracker
 
         _healedSince ??= now;
 
-        if (settings.AutoTargetOnAlert
-            && activeSeverity is BannerSeverity.LowHp or BannerSeverity.CriticalDown
-            && activeAlertPlayerId.HasValue
-            && activeAlertPlayerId.Value != _switchedPlayerId)
-        {
+        // Universal healing-priority hold: never restore to a non-healer target while any alert is active
+        // or any watched, connected, non-truly-dead ally still needs healing (even if banner timed out).
+        if (activeSeverity is BannerSeverity.LowHp or BannerSeverity.CriticalDown || activeAlertPlayerId.HasValue)
             return null;
+
+        var watched = HealerState.FilterWatched(members ?? Array.Empty<WatchedMemberSnapshot>(), settings);
+        for (int i = 0; i < watched.Count; i++)
+        {
+            var m = watched[i];
+            if (m.Id == 0 || !m.Connected || m.IsTrulyDead)
+                continue;
+
+            if (m.IsDeadOrDown || (m.MaxHitPoints > 0 && m.Percent <= settings.HpThresholdPercent))
+                return null;
         }
 
         if ((now - _healedSince.Value) < settings.RestoreTargetDelaySeconds)
             return null;
 
-        // Wait until DDO's asynchronous MMF selection actually lands on _switchedPlayerId
-        // (up to SelectionSettleGraceSeconds) and game/overlay focus allows input.
-        if (!_settledOnSwitchedPlayer || !foregroundAllowed)
+        if (!_settledOnSwitchedPlayer || currentSelectedId != _switchedPlayerId || !foregroundAllowed)
             return null;
 
-        var candidate = new RestoreCandidate(_originalTargetId, _originalTargetName, _originalPartySlotIndex);
+        var candidate = new RestoreCandidate(_originalTargetId, _originalTargetName, _originalPartySlotIndex, _switchedPlayerId);
         Reset();
         return candidate;
     }

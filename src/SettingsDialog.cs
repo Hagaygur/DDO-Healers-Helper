@@ -13,7 +13,7 @@ internal sealed class SettingsDialog : Form
     private readonly IHealerEngineView _engine;
     private readonly Settings _settings;
     private readonly Font _dialogFont = new("Segoe UI", 9);
-    private readonly List<HotkeyEntry> _hotkeyEntries = new(6);
+    private readonly List<HotkeyEntry> _hotkeyEntries = new(7);
 
     // Group 1: HP Alert & Tracking
     private readonly CheckBox _pluginEnabled = new() { Name = "PluginEnabledCheckBox", Text = "Plugin enabled (master)", AutoSize = true };
@@ -33,15 +33,36 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _showRankOnStatusHud = new() { Name = "ShowRankOnStatusHudCheckBox", Text = "Show prestige rank on Status HUD", AutoSize = true };
 
     // Group 3: Center Banner, Status HUD & Lossless Scaling
+    private readonly CheckBox _hudEnabled = new()
+    {
+        Name = "HudEnabledCheckBox",
+        Text = "Enable center alert banner (targeting & stats stay active when off)",
+        AutoSize = true
+    };
     private readonly TextBox _fontSize = new() { Name = "FontSizeTextBox", Width = 55, MaxLength = 3 };
-    private readonly NumericUpDown _bannerOpacity = new() { Name = "BannerOpacityNumeric", Minimum = 80, Maximum = 255, Increment = 5, Width = 65 };
-    private readonly CheckBox _hudEnabled = new() { Name = "HudEnabledCheckBox", Text = "HUD banner enabled", AutoSize = true };
+    private readonly NumericUpDown _bannerOpacity = new() { Name = "BannerOpacityNumeric", Minimum = 20, Maximum = 255, Increment = 5, Width = 65 };
     private readonly CheckBox _flashBanner = new() { Name = "FlashBannerCheckBox", Text = "Flash banner", AutoSize = true };
     private readonly NumericUpDown _flashInterval = new() { Name = "FlashIntervalNumeric", Minimum = 100, Maximum = 1000, Increment = 25, Width = 70 };
     private readonly CheckBox _soundOnAlert = new() { Name = "SoundOnAlertCheckBox", Text = "Sound on alert", AutoSize = true };
     private readonly CheckBox _statusHudEnabled = new() { Name = "StatusHudEnabledCheckBox", Text = "Status HUD enabled", AutoSize = true };
     private readonly TextBox _statusFontSize = new() { Name = "StatusFontSizeTextBox", Width = 50, MaxLength = 3 };
     private readonly CheckBox _excludeCapture = new() { Name = "ExcludeFromCaptureCheckBox", Text = "Exclude from capture (Lossless Scaling)", AutoSize = true };
+    private readonly Button _lowHpBgColorBtn = MakeAutoButton("LowHpBgColorButton", "Low BG: #B84200");
+    private readonly Button _lowHpBorderColorBtn = MakeAutoButton("LowHpBorderColorButton", "Low Border: #FFE066");
+    private readonly Button _criticalBgColorBtn = MakeAutoButton("CriticalBgColorButton", "Crit BG: #960A14");
+    private readonly Button _criticalBorderColorBtn = MakeAutoButton("CriticalBorderColorButton", "Crit Border: #FFD644");
+    private readonly Button _bannerTextColorBtn = MakeAutoButton("BannerTextColorButton", "Text: #FFFFFF");
+    private readonly Button _flashAltBgColorBtn = MakeAutoButton("FlashAltBgColorButton", "Flash Alt: #0A0A0E");
+    private readonly Button _resetBannerColorsBtn = MakeAutoButton("ResetBannerColorsButton", "Reset Colors");
+    private readonly Label _lsCompatibilityNoteLabel = new()
+    {
+        Name = "LsCompatibilityNoteLabel",
+        Text = HealerControlForm.CompatibilityNoteText,
+        AutoSize = true,
+        MaximumSize = new Size(530, 0),
+        Margin = new Padding(4, 4, 4, 2),
+        ForeColor = Color.FromArgb(75, 90, 115)
+    };
 
     // Group 4: Auto-Targeting
     private readonly CheckBox _autoTarget = new() { Name = "AutoTargetCheckBox", Text = "Auto-target critical player on alert", AutoSize = true };
@@ -57,10 +78,23 @@ internal sealed class SettingsDialog : Form
     private readonly TextBox _criticalHotkeyBox = new() { Name = "TargetCriticalHotkeyBox", ReadOnly = true, Width = 140 };
     private readonly TextBox _resetSavedHotkeyBox = new() { Name = "ResetSavedHotkeyBox", ReadOnly = true, Width = 140 };
     private readonly TextBox _copyScorecardHotkeyBox = new() { Name = "CopyScorecardHotkeyBox", ReadOnly = true, Width = 140 };
+    private readonly TextBox _toggleBannerHotkeyBox = new() { Name = "ToggleBannerHotkeyBox", ReadOnly = true, Width = 140 };
 
     private readonly Label _status = new() { Name = "StatusLabel", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(2, 6, 2, 6), ForeColor = Color.FromArgb(40, 75, 130) };
 
+    private bool _pluginEnabledDirty;
+    private bool _hudEnabledDirty;
+    private bool _modeDirty;
+
+    private string _lowHpBgHex;
+    private string _lowHpBorderHex;
+    private string _criticalBgHex;
+    private string _criticalBorderHex;
+    private string _bannerTextHex;
+    private string _flashAltBgHex;
+
     private HotkeyBinding _togglePluginHotkey;
+    private HotkeyBinding _toggleBannerHotkey;
     private HotkeyBinding _focusHotkey;
     private HotkeyBinding _toggleHotkey;
     private HotkeyBinding _criticalHotkey;
@@ -71,7 +105,16 @@ internal sealed class SettingsDialog : Form
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _settings = engine.GetSettings().Copy();
+
+        _lowHpBgHex = Settings.NormalizeHexColor(_settings.LowHpBgHex, Settings.DefaultLowHpBgHex);
+        _lowHpBorderHex = Settings.NormalizeHexColor(_settings.LowHpBorderHex, Settings.DefaultLowHpBorderHex);
+        _criticalBgHex = Settings.NormalizeHexColor(_settings.CriticalBgHex, Settings.DefaultCriticalBgHex);
+        _criticalBorderHex = Settings.NormalizeHexColor(_settings.CriticalBorderHex, Settings.DefaultCriticalBorderHex);
+        _bannerTextHex = Settings.NormalizeHexColor(_settings.BannerTextHex, Settings.DefaultBannerTextHex);
+        _flashAltBgHex = Settings.NormalizeHexColor(_settings.FlashAltBgHex, Settings.DefaultFlashAltBgHex);
+
         _togglePluginHotkey = _settings.TogglePluginHotkey;
+        _toggleBannerHotkey = _settings.ToggleBannerHotkey;
         _focusHotkey = _settings.FocusTargetHotkey;
         _toggleHotkey = _settings.ToggleModeHotkey;
         _criticalHotkey = _settings.TargetCriticalHotkey;
@@ -82,7 +125,7 @@ internal sealed class SettingsDialog : Form
         Font = _dialogFont;
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Size = new Size(740, 680);
+        Size = new Size(760, 720);
         MinimumSize = new Size(640, 560);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
@@ -171,45 +214,71 @@ internal sealed class SettingsDialog : Form
 
         // Section 3: Banner Appearance, Status HUD & Lossless Scaling
         var bannerGroup = CreateGroup("Center Banner, Status HUD & Lossless Scaling");
-        var bannerTable = CreateStackTable(3);
+        var bannerTable = CreateStackTable(6);
 
+        _hudEnabled.Checked = _settings.HudEnabled;
         _fontSize.Text = _settings.FontSizePixels.ToString(CultureInfo.InvariantCulture);
-        _bannerOpacity.Value = Math.Clamp(_settings.BannerOpacity, 80, 255);
+        _bannerOpacity.Value = Math.Clamp(_settings.BannerOpacity, 20, 255);
         _flashBanner.Checked = _settings.FlashBanner;
         _flashInterval.Value = Math.Clamp(_settings.FlashIntervalMs, 100, 1000);
-        _hudEnabled.Checked = _settings.HudEnabled;
         _statusHudEnabled.Checked = _settings.StatusHudEnabled;
         _statusFontSize.Text = _settings.StatusFontSizePixels.ToString(CultureInfo.InvariantCulture);
         _soundOnAlert.Checked = _settings.SoundOnAlert;
         _excludeCapture.Checked = _settings.ExcludeFromCapture;
 
+        WireColorSwatchButton(_lowHpBgColorBtn, () => _lowHpBgHex, hex => _lowHpBgHex = hex);
+        WireColorSwatchButton(_lowHpBorderColorBtn, () => _lowHpBorderHex, hex => _lowHpBorderHex = hex);
+        WireColorSwatchButton(_criticalBgColorBtn, () => _criticalBgHex, hex => _criticalBgHex = hex);
+        WireColorSwatchButton(_criticalBorderColorBtn, () => _criticalBorderHex, hex => _criticalBorderHex = hex);
+        WireColorSwatchButton(_bannerTextColorBtn, () => _bannerTextHex, hex => _bannerTextHex = hex);
+        WireColorSwatchButton(_flashAltBgColorBtn, () => _flashAltBgHex, hex => _flashAltBgHex = hex);
+        _resetBannerColorsBtn.Click += (_, _) => ResetBannerColorsToDefaults();
+        RefreshColorSwatches();
+
         var bannerRow0 = CreateFlow();
-        bannerRow0.Controls.AddRange(new Control[]
-        {
-            MakeFieldLabel("Banner font (18-140 px)"), _fontSize,
-            MakeFieldLabel("Opacity (80-255)"), _bannerOpacity,
-            _hudEnabled
-        });
+        bannerRow0.Controls.Add(_hudEnabled);
 
         var bannerRow1 = CreateFlow();
         bannerRow1.Controls.AddRange(new Control[]
         {
+            MakeFieldLabel("Banner font (18-140 px)"), _fontSize,
+            MakeFieldLabel("Opacity (20-255)"), _bannerOpacity,
             _flashBanner,
-            MakeFieldLabel("Flash interval (ms)"), _flashInterval,
-            _soundOnAlert
+            MakeFieldLabel("Flash (ms)"), _flashInterval
         });
 
         var bannerRow2 = CreateFlow();
         bannerRow2.Controls.AddRange(new Control[]
         {
+            _soundOnAlert,
             _statusHudEnabled,
             MakeFieldLabel("Status font (9-48 px)"), _statusFontSize,
             _excludeCapture
         });
 
+        var bannerRow3 = CreateFlow();
+        bannerRow3.Controls.AddRange(new Control[]
+        {
+            _lowHpBgColorBtn,
+            _lowHpBorderColorBtn,
+            _criticalBgColorBtn,
+            _criticalBorderColorBtn
+        });
+
+        var bannerRow4 = CreateFlow();
+        bannerRow4.Controls.AddRange(new Control[]
+        {
+            _bannerTextColorBtn,
+            _flashAltBgColorBtn,
+            _resetBannerColorsBtn
+        });
+
         bannerTable.Controls.Add(bannerRow0, 0, 0);
         bannerTable.Controls.Add(bannerRow1, 0, 1);
         bannerTable.Controls.Add(bannerRow2, 0, 2);
+        bannerTable.Controls.Add(bannerRow3, 0, 3);
+        bannerTable.Controls.Add(bannerRow4, 0, 4);
+        bannerTable.Controls.Add(_lsCompatibilityNoteLabel, 0, 5);
         bannerGroup.Controls.Add(bannerTable);
         root.Controls.Add(bannerGroup, 0, 2);
 
@@ -259,13 +328,13 @@ internal sealed class SettingsDialog : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 3,
-            RowCount = 6,
+            RowCount = 7,
             Padding = new Padding(4)
         };
         hotkeyTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         hotkeyTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         hotkeyTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 7; i++)
         {
             hotkeyTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
@@ -276,9 +345,17 @@ internal sealed class SettingsDialog : Form
         AddHotkeyRow(hotkeyTable, 3, "Target Critical Now", _criticalHotkeyBox, () => _criticalHotkey, b => _criticalHotkey = b);
         AddHotkeyRow(hotkeyTable, 4, "Reset People Saved", _resetSavedHotkeyBox, () => _resetSavedHotkey, b => _resetSavedHotkey = b);
         AddHotkeyRow(hotkeyTable, 5, "Copy Chat Scorecard", _copyScorecardHotkeyBox, () => _copyScorecardHotkey, b => _copyScorecardHotkey = b);
+        AddHotkeyRow(hotkeyTable, 6, "Toggle Center Banner", _toggleBannerHotkeyBox, () => _toggleBannerHotkey, b => _toggleBannerHotkey = b);
 
         var hotkeyFooter = CreateFlow();
-        var resetHotkeysBtn = new Button { Name = "ResetHotkeysButton", Text = "Reset Defaults", AutoSize = true, Margin = new Padding(4, 4, 4, 2) };
+        var resetHotkeysBtn = new Button
+        {
+            Name = "ResetHotkeysButton",
+            Text = "Reset Defaults",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(4, 4, 4, 2)
+        };
         resetHotkeysBtn.Click += (_, _) => ResetHotkeyDefaults();
         hotkeyFooter.Controls.Add(resetHotkeysBtn);
 
@@ -288,7 +365,7 @@ internal sealed class SettingsDialog : Form
         root.Controls.Add(hotkeyGroup, 0, 4);
 
         // Section 6: Status line
-        _status.Text = "Changes take effect immediately after Save. Drag HUDs via Move Banner / Move Status on the plugin panel.";
+        _status.Text = "Changes take effect immediately after Save. Drag/resize HUDs via Move / Resize Banner or Move Status.";
         root.Controls.Add(_status, 0, 5);
 
         // Section 7: Footer buttons
@@ -300,20 +377,109 @@ internal sealed class SettingsDialog : Form
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(0, 6, 18, 0)
         };
-        var save = new Button { Name = "SaveButton", Text = "Save", AutoSize = true };
-        var cancel = new Button { Name = "CancelButton", Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var save = new Button { Name = "SaveButton", Text = "Save", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+        var cancel = new Button { Name = "CancelButton", Text = "Cancel", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, DialogResult = DialogResult.Cancel };
         save.Click += (_, _) => SaveAndClose();
         footer.Controls.AddRange(new Control[] { save, cancel });
         root.Controls.Add(footer, 0, 6);
+
+        // Wire dirty tracking strictly AFTER initial value population so background hotkey toggles stay preserved unless edited here.
+        _pluginEnabled.CheckedChanged += (_, _) => _pluginEnabledDirty = true;
+        _hudEnabled.CheckedChanged += (_, _) => _hudEnabledDirty = true;
+        _mode.SelectedIndexChanged += (_, _) => _modeDirty = true;
 
         AcceptButton = save;
         CancelButton = cancel;
         Controls.Add(root);
     }
 
+    internal void SetBannerColorHex(string buttonName, string hex)
+    {
+        switch (buttonName)
+        {
+            case "LowHpBgColorButton":
+                _lowHpBgHex = Settings.NormalizeHexColor(hex, Settings.DefaultLowHpBgHex);
+                break;
+            case "LowHpBorderColorButton":
+                _lowHpBorderHex = Settings.NormalizeHexColor(hex, Settings.DefaultLowHpBorderHex);
+                break;
+            case "CriticalBgColorButton":
+                _criticalBgHex = Settings.NormalizeHexColor(hex, Settings.DefaultCriticalBgHex);
+                break;
+            case "CriticalBorderColorButton":
+                _criticalBorderHex = Settings.NormalizeHexColor(hex, Settings.DefaultCriticalBorderHex);
+                break;
+            case "BannerTextColorButton":
+                _bannerTextHex = Settings.NormalizeHexColor(hex, Settings.DefaultBannerTextHex);
+                break;
+            case "FlashAltBgColorButton":
+                _flashAltBgHex = Settings.NormalizeHexColor(hex, Settings.DefaultFlashAltBgHex);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(buttonName), buttonName, "Unknown color swatch button");
+        }
+
+        RefreshColorSwatches();
+    }
+
+    private void WireColorSwatchButton(Button button, Func<string> getter, Action<string> setter)
+    {
+        button.Click += (_, _) =>
+        {
+            Settings.TryParseHexRgb(getter(), out int r, out int g, out int b);
+            using var picker = new ColorDialog
+            {
+                FullOpen = true,
+                Color = Color.FromArgb(r, g, b)
+            };
+            if (picker.ShowDialog(this) == DialogResult.OK)
+            {
+                setter(string.Create(CultureInfo.InvariantCulture, $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}"));
+                RefreshColorSwatches();
+            }
+        };
+    }
+
+    private void ResetBannerColorsToDefaults()
+    {
+        _lowHpBgHex = Settings.DefaultLowHpBgHex;
+        _lowHpBorderHex = Settings.DefaultLowHpBorderHex;
+        _criticalBgHex = Settings.DefaultCriticalBgHex;
+        _criticalBorderHex = Settings.DefaultCriticalBorderHex;
+        _bannerTextHex = Settings.DefaultBannerTextHex;
+        _flashAltBgHex = Settings.DefaultFlashAltBgHex;
+        RefreshColorSwatches();
+        _status.Text = "Banner colors restored to defaults. Click Save to apply.";
+    }
+
+    private void RefreshColorSwatches()
+    {
+        ApplySwatchStyle(_lowHpBgColorBtn, "Low BG", _lowHpBgHex);
+        ApplySwatchStyle(_lowHpBorderColorBtn, "Low Border", _lowHpBorderHex);
+        ApplySwatchStyle(_criticalBgColorBtn, "Crit BG", _criticalBgHex);
+        ApplySwatchStyle(_criticalBorderColorBtn, "Crit Border", _criticalBorderHex);
+        ApplySwatchStyle(_bannerTextColorBtn, "Text", _bannerTextHex);
+        ApplySwatchStyle(_flashAltBgColorBtn, "Flash Alt", _flashAltBgHex);
+        _lowHpBgColorBtn.Parent?.PerformLayout();
+        _bannerTextColorBtn.Parent?.PerformLayout();
+    }
+
+    private static void ApplySwatchStyle(Button btn, string label, string hex)
+    {
+        string clean = Settings.NormalizeHexColor(hex, "#FFFFFF");
+        Settings.TryParseHexRgb(clean, out int r, out int g, out int b);
+        double luminance = (0.299 * r) + (0.587 * g) + (0.114 * b);
+        btn.UseVisualStyleBackColor = false;
+        btn.FlatStyle = FlatStyle.Flat;
+        btn.BackColor = Color.FromArgb(r, g, b);
+        btn.ForeColor = luminance > 150.0 ? Color.FromArgb(20, 24, 30) : Color.White;
+        btn.Text = $"{label}: {clean}";
+    }
+
     private void ResetHotkeyDefaults()
     {
         _togglePluginHotkey = Settings.DefaultTogglePluginHotkey;
+        _toggleBannerHotkey = HotkeyBinding.Empty;
         _focusHotkey = Settings.DefaultFocusTargetHotkey;
         _toggleHotkey = Settings.DefaultToggleModeHotkey;
         _criticalHotkey = Settings.DefaultTargetCriticalHotkey;
@@ -403,7 +569,7 @@ internal sealed class SettingsDialog : Form
                 return;
             }
 
-            var seenHotkeys = new Dictionary<HotkeyBinding, string>(6);
+            var seenHotkeys = new Dictionary<HotkeyBinding, string>(7);
             foreach (var entry in _hotkeyEntries)
             {
                 var binding = entry.Getter();
@@ -417,7 +583,7 @@ internal sealed class SettingsDialog : Form
                 seenHotkeys[binding] = entry.ActionName;
             }
 
-            // Preserve HUD positions, focused player, and all live gamification stats.
+            // Preserve HUD positions, focused player, live gamification stats, and untouched active/banner/mode states.
             var live = _engine.GetSettings();
             _settings.HudX = live.HudX;
             _settings.HudY = live.HudY;
@@ -427,8 +593,10 @@ internal sealed class SettingsDialog : Form
             _settings.FocusedPlayerName = live.FocusedPlayerName;
             _settings.CopyLiveStatsFrom(live);
 
-            _settings.PluginEnabled = _pluginEnabled.Checked;
-            _settings.Mode = _mode.SelectedItem is TrackingMode mode ? mode : TrackingMode.Party;
+            _settings.PluginEnabled = _pluginEnabledDirty ? _pluginEnabled.Checked : live.PluginEnabled;
+            _settings.Mode = _modeDirty
+                ? (_mode.SelectedItem is TrackingMode mode ? mode : TrackingMode.Party)
+                : live.Mode;
             _settings.IncludeSelfInPartyMode = _includeSelf.Checked;
             _settings.SuppressAlertsInTown = _suppressInTown.Checked;
             _settings.HpThresholdPercent = (int)_threshold.Value;
@@ -442,15 +610,21 @@ internal sealed class SettingsDialog : Form
             _settings.ShowSavedNotice = _showSavedNotice.Checked;
             _settings.ShowRankOnStatusHud = _showRankOnStatusHud.Checked;
 
+            _settings.HudEnabled = _hudEnabledDirty ? _hudEnabled.Checked : live.HudEnabled;
             _settings.FontSizePixels = fontPixels;
             _settings.BannerOpacity = (int)_bannerOpacity.Value;
             _settings.FlashBanner = _flashBanner.Checked;
             _settings.FlashIntervalMs = (int)_flashInterval.Value;
-            _settings.HudEnabled = _hudEnabled.Checked;
             _settings.StatusHudEnabled = _statusHudEnabled.Checked;
             _settings.StatusFontSizePixels = statusFontPixels;
             _settings.SoundOnAlert = _soundOnAlert.Checked;
             _settings.ExcludeFromCapture = _excludeCapture.Checked;
+            _settings.LowHpBgHex = _lowHpBgHex;
+            _settings.LowHpBorderHex = _lowHpBorderHex;
+            _settings.CriticalBgHex = _criticalBgHex;
+            _settings.CriticalBorderHex = _criticalBorderHex;
+            _settings.BannerTextHex = _bannerTextHex;
+            _settings.FlashAltBgHex = _flashAltBgHex;
 
             _settings.AutoTargetOnAlert = _autoTarget.Checked;
             _settings.TargetingMethod = _targetMethod.SelectedItem is TargetMethod tm ? tm : TargetMethod.Auto;
@@ -459,6 +633,7 @@ internal sealed class SettingsDialog : Form
             _settings.RestoreTargetDelaySeconds = (double)_restoreDelay.Value;
 
             _settings.TogglePluginHotkey = _togglePluginHotkey;
+            _settings.ToggleBannerHotkey = _toggleBannerHotkey;
             _settings.FocusTargetHotkey = _focusHotkey;
             _settings.ToggleModeHotkey = _toggleHotkey;
             _settings.TargetCriticalHotkey = _criticalHotkey;
@@ -492,7 +667,13 @@ internal sealed class SettingsDialog : Form
         box.LostFocus += (_, _) => box.Text = getter().Format();
         box.KeyPress += (_, e) => e.Handled = true;
 
-        var clear = new Button { Text = "Clear", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+        var clear = new Button
+        {
+            Text = "Clear",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 2, 0, 2)
+        };
         clear.Click += (_, _) =>
         {
             setter(HotkeyBinding.Empty);
@@ -503,6 +684,15 @@ internal sealed class SettingsDialog : Form
         table.Controls.Add(box, 1, row);
         table.Controls.Add(clear, 2, row);
     }
+
+    private static Button MakeAutoButton(string name, string text) => new()
+    {
+        Name = name,
+        Text = text,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        Margin = new Padding(3, 3, 3, 3)
+    };
 
     private static bool IsModifierOrIgnoredKey(Keys key) => key is
         Keys.None or Keys.ProcessKey or Keys.Packet or Keys.Return or

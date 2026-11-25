@@ -17,9 +17,9 @@ The plugin uses DH's local game-data provider and keymap/selection APIs. It does
 | Hosted WinForms panels can clip toolbar icons and buttons at narrow DH widths | Use `FitToolbarWidth()`, `AutoSize` `TableLayoutPanel` rows, and `FlowLayoutPanel` button rows |
 | DH plugin installer requires runtime-only archives | Enforce a 3-entry ZIP (`plugins/HealersHelper/VoK.HealersHelper.{dll,deps.json,metadata}`), DLL first; ship source separately |
 
-## Evidence and remaining verification
+## Evidence and platform status
 
-- **Verified:** Stage 1 IL/metadata/SHA-256 verification of `VoK.Sdk.dll` (`4.2.1.0`), `DungeonHelper.dll` (`4.2.0.146`), and local `ddo.keymap`, `AlchPlugin` Win32/CI reference patterns, local Windows & WSL builds/tests (220 C# assertions, 24 Python CI checks, 4 Windows smoke suites), and live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.1.0`).
-- **Unverified at authoring time:** Live DDO gameplay behavior and live Lossless Scaling capture modes (WGC and DXGI).
+- **Windows 11 live verification:** Tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all OS, GPU, display, or capture configurations), alongside Stage 1 IL/metadata/SHA-256 verification of `VoK.Sdk.dll` (`4.2.1.0`), `DungeonHelper.dll` (`4.2.0.146`), local Windows & WSL builds/tests (233 C# assertions, 25 Python CI checks, 4 Windows smoke suites), and GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.2.0`).
+- **Linux / Wine / Proton:** Cross-compiles and passes portable C#/Python CI suites natively on Linux (`EnableWindowsTargeting=true` + `msitools`) and includes `IsWineRuntime` User32/GDI32 fallbacks (`wine_get_version`), so it should also work on Linux via Wine/Proton (live Linux gameplay has not yet been tested).
 
 See [Operations](OPERATIONS.md) for the live verification checklist and [References](REFERENCES.md) for external documentation. Agent counterpart: [Context](../agents/CONTEXT.md).

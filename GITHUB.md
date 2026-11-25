@@ -43,7 +43,7 @@ Conventional commits touching `src/**/*.cs` can raise (never lower) the bump: `f
 
 ## Build and test stages
 
-1. **Python unit tests** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules, source package allowlist coverage, and pinned SDK hash/failure handling.
+1. **Python unit tests & README sync guard** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules, source package allowlist coverage, pinned SDK hash/failure handling, and that `README.md` documents 100% of `src/Settings.cs` public properties, all 8 prestige ranks, `### Gamification options explainer`, and `## Release history`. Every version/release commit must update `README.md` (including `## Release history` and verified counts) and `docs/{agents,human}/*` together.
 2. **Portable C# tests & contracts** (`tests/HealersHelper.Tests.csproj --contracts dist/contracts.json`): validates HP state machine, hysteresis, dead-alert timeout/recovery, single-player focus, `PeopleSavedTracker` clutch-save/MaxHP rules, hotkey matching/dedup/auto-repeat suppression, target selector guards, settings persistence, and banner + status HUD presentation.
 3. **Version selection** (`ci/version.py`): resolves next version and `publish` flag against the latest reachable stable release tag.
 4. **Pinned SDK acquisition** (`ci/Get-Sdk.ps1` on Windows, `ci/get_sdk_linux.py` on Ubuntu): downloads `DungeonHelper.msi`, verifies its SHA-256 and `VoK.Sdk.dll` SHA-256 (`4.2.1.0`) from `ci/sdk-lock.json`, and extracts without committing SDK binaries.
@@ -70,6 +70,6 @@ dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts 
 
 ## Verification note
 
-GitHub-hosted workflow execution (`linux`, `build`, and `release`) has been verified on `Hagaygur/DDO-Healers-Helper` (`v1.0.0` published cleanly). Live DDO gameplay and live Lossless Scaling behavior (WGC/DXGI) still cannot be inferred from CI builds or synthetic smoke tests and require live verification on a Windows gaming PC.
+GitHub-hosted workflow execution (`linux`, `build`, and `release`) has been verified on `Hagaygur/DDO-Healers-Helper` across `v1.0.0`–`v1.2.0`, and the plugin has been tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all OS/GPU/display/capture configurations). Linux cross-compilation and portable C#/Python tests run in CI on Ubuntu with Wine/Proton-safe runtime fallbacks (`IsWineRuntime`), while live Linux gameplay via Wine/Proton remains untested.
 
 References: [GitHub .NET builds](https://docs.github.com/en/actions/tutorials/build-and-test-code/net), [workflow syntax and permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), [workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).

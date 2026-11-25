@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -242,6 +243,31 @@ class CodeReleaseTests(unittest.TestCase):
             if (repo_root / name).is_file():
                 packaged.add(name)
         self.assertTrue(tracked.issubset(packaged), f'Tracked files missing from package.py allowlist: {sorted(tracked - packaged)}')
+
+    def test_readme_documents_all_settings_hotkeys_and_gamification(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        if not (repo_root / '.git').exists():
+            return
+        settings_src = (repo_root / 'src/Settings.cs').read_text(encoding='utf-8')
+        settings_class_src = settings_src.split('internal sealed class SettingsStore', 1)[0]
+        stats_src = (repo_root / 'src/HealerStats.cs').read_text(encoding='utf-8')
+        readme = (repo_root / 'README.md').read_text(encoding='utf-8')
+
+        properties = re.findall(
+            r'\bpublic\s+(?!static\b|const\b|void\b|Settings\b)[\w<>?.\[\]]+\s+(\w+)\s*\{\s*get;\s*set;\s*\}',
+            settings_class_src,
+        )
+        self.assertGreaterEqual(len(properties), 55, 'Expected >= 55 public Settings properties')
+        missing_props = [prop for prop in properties if prop not in readme]
+        self.assertEqual(missing_props, [], f'Settings properties missing from README.md: {missing_props}')
+
+        ranks = re.findall(r'=>\s*"([^"]+)"', stats_src.split('RankForSaves', 1)[1].split(';', 1)[0])
+        self.assertEqual(len(ranks), 8, f'Expected 8 prestige ranks, got {ranks}')
+        missing_ranks = [rank for rank in ranks if rank not in readme]
+        self.assertEqual(missing_ranks, [], f'Prestige ranks missing from README.md: {missing_ranks}')
+
+        self.assertIn('### Gamification options explainer', readme)
+        self.assertIn('## Release history', readme)
 
 
 if __name__ == '__main__':

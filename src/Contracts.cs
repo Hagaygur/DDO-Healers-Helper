@@ -126,10 +126,12 @@ internal interface IHealerEngineView
     Settings GetSettings();
     void SaveSettings(Settings settings);
     void SavePosition(double x, double y);
+    void SaveBannerLayout(double x, double y, int fontSizePixels, int bannerOpacity);
     void SaveStatusPosition(double x, double y);
     AlertBannerView View();
     WatchedMemberSnapshot[] GetMembers();
     void TogglePluginEnabled();
+    void ToggleBannerHud();
     void ResetPeopleSaved();
     string GetChatScorecard();
     bool CopyChatScorecard();

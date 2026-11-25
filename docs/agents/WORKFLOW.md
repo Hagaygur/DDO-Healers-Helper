@@ -5,7 +5,7 @@ Human counterpart: [Operations](../human/OPERATIONS.md). Detailed CI reference: 
 1. Read `AGENTS.md` and the guide matching the task. Inspect current code rather than treating docs as newer evidence.
 2. Keep changes scoped. Do not upgrade `VoK.Sdk` beyond `4.2.1.0`, recreate plugin identity, or add non-runtime files to the plugin ZIP.
 3. Run relevant pure tests (`py -3 -m unittest discover -s ci -p "test_*.py" -v`, `HealersHelper.Tests`), `check_build_output.py`, and on Windows also run `WindowsSmoke`. Report unavailable checks explicitly.
-4. Update both human and agent documentation when interfaces, behavior, build steps, or verified evidence change.
+4. **Mandatory per-version `README.md` & docs sync:** At the end of every version/release, update `README.md` (features, settings/hotkeys tables covering 100% of `Settings` properties, gamification/options explainer, verified test counts, and `## Release history`) AND synchronize both `docs/human/*` and `docs/agents/*` in the same commit (`ci/test_version.py` enforces `README.md` coverage automatically).
 5. Inspect version impact and archive contents. No failing test may be reinterpreted as a successful major release.
 
 ## CI file map

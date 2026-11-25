@@ -18,5 +18,5 @@ Stage 1 IL/metadata inspection against `C:\Users\hagay\AppData\Roaming\Dungeon H
 
 ## Evidence ledger
 
-- **Verified:** Stage 1 IL/metadata/keymap/SDK SHA-256 verification against DH `4.2.0.146` / `VoK.Sdk 4.2.1.0`, `AlchPlugin` reference patterns, local Windows/WSL Ubuntu 22.04 builds & tests (220 C# assertions, 24 Python CI checks, 4 Windows smoke suites), and live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.1.0`).
-- **Unverified at authoring time:** Live DDO gameplay integration and live Lossless Scaling capture backends (WGC and DXGI). Do not report live runtime gameplay or LS capture as verified until actually executed and observed.
+- **Verified:** Stage 1 IL/metadata/keymap/SDK SHA-256 verification against DH `4.2.0.146` / `VoK.Sdk 4.2.1.0`, `AlchPlugin` reference patterns, local Windows/WSL Ubuntu 22.04 builds & tests (233 C# assertions, 25 Python CI checks, 4 Windows smoke suites), live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.2.0`), and live gameplay testing with DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed on any or all OS, GPU, display, or capture configurations).
+- **Linux / Wine / Proton:** Cross-compiles and passes portable C#/Python CI suites natively on Linux (`EnableWindowsTargeting=true` + `msitools`) and includes `IsWineRuntime` User32/GDI32 fallbacks (`wine_get_version`) so it should work on Linux via Wine/Proton, though live Linux gameplay has not yet been tested.

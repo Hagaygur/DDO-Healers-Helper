@@ -97,6 +97,11 @@ internal sealed class TargetSelector
             : null;
 
         ulong currentSelected = _data.GetSelectedObjectId().GetValueOrDefault();
+        if (candidate.ExpectedCurrentTargetId != 0 && currentSelected != candidate.ExpectedCurrentTargetId)
+        {
+            LastStatus = "Restore skipped (target changed)";
+            return false;
+        }
 
         TargetDecision decision = TargetPolicy.EvaluateRestore(
             candidate.TargetId,
@@ -111,6 +116,13 @@ internal sealed class TargetSelector
         LastStatus = decision.Status;
         if (decision.Action == TargetActionKind.None)
             return false;
+
+        if (candidate.ExpectedCurrentTargetId != 0
+            && _data.GetSelectedObjectId().GetValueOrDefault() != candidate.ExpectedCurrentTargetId)
+        {
+            LastStatus = "Restore skipped (target changed)";
+            return false;
+        }
 
         if (decision.Action == TargetActionKind.SdkSelectObject)
         {

@@ -619,8 +619,8 @@ internal static class Program
         Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.75) is null,
             "before 0.2s delay elapses (0.15s), restore stays pending");
         var restored = tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.81);
-        Assert(restored is { TargetId: 900, TargetName: "Raid Boss", PartySlotIndex: -1 } && !tracker.IsActive,
-            "once healed and 0.2s delay elapses, returns original Boss candidate and resets");
+        Assert(restored is { TargetId: 900, TargetName: "Raid Boss", PartySlotIndex: -1, ExpectedCurrentTargetId: 2 } && !tracker.IsActive,
+            "once healed and 0.2s delay elapses, returns original Boss candidate with ExpectedCurrentTargetId and resets");
         Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.9) is null,
             "completed restore is one-shot and does not re-fire");
 
@@ -649,20 +649,34 @@ internal static class Program
         tracker.RecordSwitch(3, "Bob", 2, aliceLow, recoverAt, 26.5);
         Assert(!tracker.IsActive, "plugin switching back to _originalTargetId resets tracker");
 
-        // 4. Hold while another watched ally is actively alerting (when AutoTargetOnAlert == true).
+        // 4. Universal healing-priority hold (holds regardless of AutoTargetOnAlert and even if banner timed out while ally needs heal).
         tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 30.0);
         _ = tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 30.2);
         Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 31.0) is null && tracker.IsActive,
             "holds restore while another watched ally (Bob) is actively alerting with AutoTargetOnAlert=true");
-        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 31.3) is { TargetId: 900 },
-            "resumes and restores Boss once secondary ally alert clears");
+        var manualOnlySettings = settings.Copy();
+        manualOnlySettings.AutoTargetOnAlert = false;
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, manualOnlySettings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 31.1) is null && tracker.IsActive,
+            "universal hold blocks restore even when AutoTargetOnAlert=false while any alert or low ally exists");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, manualOnlySettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 31.2) is null && tracker.IsActive,
+            "universal hold blocks restore when MaxAlertSeconds/DeadAlertSeconds muted banner but watched ally is still <= threshold");
+        var bobTrulyDead = new WatchedMemberSnapshot(3, "Bob", -15, 200, 2, true, IsDeadOrDown: true, IsTrulyDead: true);
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobTrulyDead }, manualOnlySettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 31.3) is { TargetId: 900 },
+            "truly dead corpse does not block restoring Boss once all living watched allies are healthy");
 
-        // 5. MMF settle grace (<= 0.8s) vs unsettled timeout (> 0.8s) vs manual target override after settling.
+        // 5. Tight MMF settle grace (only _originalTargetId or _switchedPlayerId valid <= 0.8s) vs manual override.
         tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 40.0);
         Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 900, BannerSeverity.LowHp, 2, false, true, 40.6) is null && tracker.IsActive,
-            "unsettled selection within 0.8s grace period stays active");
+            "unsettled selection still on _originalTargetId within 0.8s grace period stays active");
         Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 900, BannerSeverity.LowHp, 2, false, true, 40.85) is null && !tracker.IsActive,
             "selection failing to settle on switched player within 0.8s cancels restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 41.0);
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 0, BannerSeverity.LowHp, 2, false, true, 41.1) is null && !tracker.IsActive,
+            "clearing target (0) during unsettled grace window cancels restore immediately");
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 41.5);
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 777, BannerSeverity.LowHp, 2, false, true, 41.6) is null && !tracker.IsActive,
+            "clicking third entity during unsettled grace window cancels restore immediately");
 
         tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 42.0);
         _ = tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 42.1); // settled
@@ -745,6 +759,19 @@ internal static class Program
         _ = tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 100.2);
         Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 130.1) is null && !tracker.IsActive,
             "exceeding 30s MaxRestoreWindowSeconds expires and cancels target restore");
+
+        // 9. Immediate cooldown-release helper IsPreviousTargetHealedOrGone.
+        Assert(!TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceLow }, 0, recoverAt)
+               && !TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceLow }, ulong.MaxValue, recoverAt),
+            "IsPreviousTargetHealedOrGone rejects invalid 0 and ulong.MaxValue IDs");
+        Assert(!TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceLow }, 2, recoverAt)
+               && !TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceIncap }, 2, recoverAt),
+            "IsPreviousTargetHealedOrGone stays false while prior ally is still low or incapacitated");
+        Assert(TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceHealed }, 2, recoverAt)
+               && TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceOffline }, 2, recoverAt)
+               && TargetRestoreTracker.IsPreviousTargetHealedOrGone(new[] { aliceDead }, 2, recoverAt)
+               && TargetRestoreTracker.IsPreviousTargetHealedOrGone(Array.Empty<WatchedMemberSnapshot>(), 2, recoverAt),
+            "IsPreviousTargetHealedOrGone releases cooldown once prior ally is healed, offline, truly dead, or gone");
     }
 
     private static void TestSettingsValidationPersistenceAndFonts()
@@ -760,6 +787,8 @@ internal static class Program
             FontSizePixels = 999,
             BannerOpacity = 10,
             FlashIntervalMs = 10,
+            LowHpBgHex = "not-hex",
+            CriticalBorderHex = "#abc",
             SaveWindowSeconds = double.NaN,
             SelfCastWindowSeconds = 99.0,
             MinHealDelta = 0,
@@ -786,8 +815,15 @@ internal static class Program
         Assert(invalid.Mode == TrackingMode.Party && invalid.TargetingMethod == TargetMethod.Auto, "invalid enums reset to defaults");
         Assert(invalid.HpThresholdPercent == 5 && invalid.RecoveryHysteresisPercent == 20 && invalid.MaxAlertSeconds == 120,
             "threshold, hysteresis, and MaxAlertSeconds clamped");
-        Assert(invalid.DeadAlertSeconds == 0 && invalid.FontSizePixels == 140 && invalid.BannerOpacity == 80 && invalid.FlashIntervalMs == 100,
-            "dead alert, font, opacity, and flash interval clamped");
+        Assert(invalid.DeadAlertSeconds == 0 && invalid.FontSizePixels == 140 && invalid.BannerOpacity == 20 && invalid.FlashIntervalMs == 100,
+            "dead alert, font, opacity (min 20), and flash interval clamped");
+        Assert(invalid.LowHpBgHex == Settings.DefaultLowHpBgHex && invalid.CriticalBorderHex == "#AABBCC"
+               && Settings.NormalizeHexColor("ff00aa", "#000000") == "#FF00AA",
+            "NormalizeHexColor expands 3-digit/6-digit hex and falls back on invalid strings");
+        invalid.LowHpBgHex = "#112233";
+        invalid.ResetBannerColors();
+        Assert(invalid.LowHpBgHex == Settings.DefaultLowHpBgHex && invalid.CriticalBorderHex == Settings.DefaultCriticalBorderHex,
+            "ResetBannerColors restores all 6 default banner hex colors");
         Assert(invalid.SaveWindowSeconds == 5.0 && invalid.SelfCastWindowSeconds == 15.0 && invalid.MinHealDelta == 1,
             "SaveWindowSeconds, SelfCastWindowSeconds, and MinHealDelta clamped/sanitized");
         Assert(invalid.HudX == 0.50 && invalid.HudY == 1.0 && invalid.AutoTargetCooldownSeconds == 3.0 && invalid.RestoreTargetDelaySeconds == 0.2,
@@ -839,6 +875,12 @@ internal static class Program
             s.ExcludeFromCapture = false;
             s.HudX = 0.25;
             s.HudY = 0.75;
+            s.LowHpBgHex = "#123456";
+            s.LowHpBorderHex = "#654321";
+            s.CriticalBgHex = "#7A0019";
+            s.CriticalBorderHex = "#FFCC33";
+            s.BannerTextHex = "#F0F4FF";
+            s.FlashAltBgHex = "#10141C";
             s.StatusHudEnabled = false;
             s.StatusFontSizePixels = 19;
             s.StatusHudX = 0.15;
@@ -858,6 +900,7 @@ internal static class Program
             s.RestorePreviousTargetAfterHeal = false;
             s.RestoreTargetDelaySeconds = 0.7;
             s.TogglePluginHotkey = new HotkeyBinding(0x50, true, true, false);
+            s.ToggleBannerHotkey = new HotkeyBinding(0x42, true, true, false);
             s.FocusTargetHotkey = new HotkeyBinding(0x46, true, false, true);
             s.ResetSavedHotkey = new HotkeyBinding(0x52, true, true, false);
             s.CopyScorecardHotkey = new HotkeyBinding(0x43, true, true, false);
@@ -879,16 +922,21 @@ internal static class Program
             Assert(!reloaded.StatusHudEnabled && reloaded.StatusFontSizePixels == 19 && reloaded.StatusHudX == 0.15 && reloaded.StatusHudY == 0.85,
                 "JSON round-trip preserves StatusHud settings");
             Assert(reloaded.HudX == 0.25 && reloaded.HudY == 0.75 && reloaded.AutoTargetCooldownSeconds == 4.5
-                   && !reloaded.RestorePreviousTargetAfterHeal && Math.Abs(reloaded.RestoreTargetDelaySeconds - 0.7) < 0.001,
-                "JSON round-trip preserves HudX, HudY, AutoTargetCooldownSeconds, and target restore settings");
+                   && !reloaded.RestorePreviousTargetAfterHeal && Math.Abs(reloaded.RestoreTargetDelaySeconds - 0.7) < 0.001
+                   && reloaded.LowHpBgHex == "#123456" && reloaded.LowHpBorderHex == "#654321"
+                   && reloaded.CriticalBgHex == "#7A0019" && reloaded.CriticalBorderHex == "#FFCC33"
+                   && reloaded.BannerTextHex == "#F0F4FF" && reloaded.FlashAltBgHex == "#10141C",
+                "JSON round-trip preserves HudX, HudY, AutoTargetCooldownSeconds, target restore settings, and all 6 banner hex colors");
             Assert(reloaded.TogglePluginHotkey == new HotkeyBinding(0x50, true, true, false)
+                   && reloaded.ToggleBannerHotkey == new HotkeyBinding(0x42, true, true, false)
                    && reloaded.FocusTargetHotkey == new HotkeyBinding(0x46, true, false, true)
                    && reloaded.ResetSavedHotkey == new HotkeyBinding(0x52, true, true, false)
                    && reloaded.CopyScorecardHotkey == new HotkeyBinding(0x43, true, true, false),
-                "JSON round-trip preserves all 6 hotkey bindings");
+                "JSON round-trip preserves all 7 hotkey bindings");
             Assert(reloaded.Copy().FontSizePixels == 72 && reloaded.Copy().PeopleSaved == 17 && reloaded.Copy().BestReflexMs == 140
-                   && !reloaded.Copy().RestorePreviousTargetAfterHeal && Math.Abs(reloaded.Copy().RestoreTargetDelaySeconds - 0.7) < 0.001,
-                "Copy preserves exact FontSizePixels, PeopleSaved, gamification stats, and target restore settings");
+                   && !reloaded.Copy().RestorePreviousTargetAfterHeal && Math.Abs(reloaded.Copy().RestoreTargetDelaySeconds - 0.7) < 0.001
+                   && reloaded.Copy().LowHpBgHex == "#123456" && reloaded.Copy().ToggleBannerHotkey == new HotkeyBinding(0x42, true, true, false),
+                "Copy preserves exact FontSizePixels, PeopleSaved, gamification stats, target restore, colors, and ToggleBannerHotkey");
         }
         finally
         {
@@ -911,13 +959,63 @@ internal static class Program
         Assert(critOn.BackgroundColorArgb == unchecked((int)0xF0960A14) && critOn.BackgroundColorArgb != critOff.BackgroundColorArgb && critOn.FontSizePixels == 64,
             "CriticalDown preserves exact default 235 opacity ARGB, changes colors across flash phases, and keeps integer font");
 
-        // BannerOpacity scales background alpha monotonically (80 < 235 < 255) and FlashBanner = false keeps steady frame.
+        // BannerOpacity scales background alpha monotonically (20 < 80 < 235 < 255) and FlashBanner = false keeps steady frame.
+        var ultraDimFrame = BannerPresentation.Compute(critView, new Settings { BannerOpacity = 20 }, false, false, 0.0, 0.0);
         var dimFrame = BannerPresentation.Compute(critView, new Settings { BannerOpacity = 80 }, false, false, 0.0, 0.0);
         var fullFrame = BannerPresentation.Compute(critView, new Settings { BannerOpacity = 255 }, false, false, 0.0, 0.0);
+        int alphaMin = (ultraDimFrame.BackgroundColorArgb >> 24) & 0xFF;
         int alphaDim = (dimFrame.BackgroundColorArgb >> 24) & 0xFF;
         int alphaDef = (critOn.BackgroundColorArgb >> 24) & 0xFF;
         int alphaFull = (fullFrame.BackgroundColorArgb >> 24) & 0xFF;
-        Assert(alphaDim < alphaDef && alphaDef < alphaFull && alphaFull == 255, "BannerOpacity scales background alpha monotonically");
+        Assert(alphaMin == 20 && alphaMin < alphaDim && alphaDim < alphaDef && alphaDef < alphaFull && alphaFull == 255,
+            "BannerOpacity scales background alpha monotonically across 20..255");
+
+        // Custom hex colors apply across both flash-on and flash-off phases while defaults stay exact.
+        var customColors = new Settings
+        {
+            CriticalBgHex = "#220044",
+            CriticalBorderHex = "#00FFCC",
+            LowHpBgHex = "#004466",
+            LowHpBorderHex = "#66FFEE",
+            BannerTextHex = "#FFEEAA",
+            FlashAltBgHex = "#121824"
+        };
+        var customCritOn = BannerPresentation.Compute(critView, customColors, false, false, 0.0, 0.0);
+        var customCritOff = BannerPresentation.Compute(critView, customColors, false, false, 0.25, 0.0);
+        var customLowOn = BannerPresentation.Compute(lowView, customColors, false, false, 0.0, 0.0);
+        var customLowOff = BannerPresentation.Compute(lowView, customColors, false, false, 0.25, 0.0);
+        Assert((customCritOn.BackgroundColorArgb & 0x00FFFFFF) == 0x220044
+               && customCritOn.BorderColorArgb == unchecked((int)0xFF00FFCC)
+               && customCritOn.TextColorArgb == unchecked((int)0xFFFFEEAA)
+               && (customCritOff.BackgroundColorArgb & 0x00FFFFFF) == 0x121824
+               && (customLowOn.BackgroundColorArgb & 0x00FFFFFF) == 0x004466
+               && customLowOn.BorderColorArgb == unchecked((int)0xFF66FFEE)
+               && (customLowOff.BackgroundColorArgb & 0x00FFFFFF) == 0x121824,
+            "custom banner hex colors apply to CriticalDown and LowHp flash-on and flash-off frames");
+
+        // HudEnabled = false suppresses all live severities while still allowing Preview (demo) and Move/Resize (editing).
+        var bannerDisabled = new Settings { HudEnabled = false };
+        Assert(!BannerPresentation.Compute(critView, bannerDisabled, false, false, 0.0, 0.0).Visible
+               && !BannerPresentation.Compute(lowView, bannerDisabled, false, false, 0.0, 0.0).Visible
+               && !BannerPresentation.Compute(noticeView, bannerDisabled, false, false, 0.0, 0.0).Visible
+               && !BannerPresentation.Compute(idleView, bannerDisabled, false, false, 0.0, 0.0).Visible,
+            "HudEnabled=false suppresses CriticalDown, LowHp, Notice, and Idle live banner frames");
+        Assert(BannerPresentation.Compute(idleView, bannerDisabled, demo: true, editing: false, 0.0, 0.0).Visible
+               && BannerPresentation.Compute(idleView, bannerDisabled, demo: false, editing: true, 0.0, 15.0).Visible,
+            "HudEnabled=false still permits explicit Preview Banner and Move/Resize Banner on demand");
+
+        // ClassifyEditHit classifies all 4 corners, all 4 edges, center Move, and outside None.
+        Assert(BannerPresentation.ClassifyEditHit(500, 130, 5, 5) == BannerEditDragMode.ResizeTopLeft
+               && BannerPresentation.ClassifyEditHit(500, 130, 495, 5) == BannerEditDragMode.ResizeTopRight
+               && BannerPresentation.ClassifyEditHit(500, 130, 5, 125) == BannerEditDragMode.ResizeBottomLeft
+               && BannerPresentation.ClassifyEditHit(500, 130, 495, 125) == BannerEditDragMode.ResizeBottomRight
+               && BannerPresentation.ClassifyEditHit(500, 130, 5, 65) == BannerEditDragMode.ResizeLeft
+               && BannerPresentation.ClassifyEditHit(500, 130, 495, 65) == BannerEditDragMode.ResizeRight
+               && BannerPresentation.ClassifyEditHit(500, 130, 250, 5) == BannerEditDragMode.ResizeTop
+               && BannerPresentation.ClassifyEditHit(500, 130, 250, 125) == BannerEditDragMode.ResizeBottom
+               && BannerPresentation.ClassifyEditHit(500, 130, 250, 65) == BannerEditDragMode.Move
+               && BannerPresentation.ClassifyEditHit(500, 130, -1, 65) == BannerEditDragMode.None,
+            "ClassifyEditHit classifies all 4 corners, 4 edges, center move, and out-of-bounds");
 
         var steadySettings = new Settings { FlashBanner = false, FlashIntervalMs = 250 };
         var steadyAtHalf = BannerPresentation.Compute(critView, steadySettings, false, false, 0.25, 0.0);
@@ -932,8 +1030,9 @@ internal static class Program
         Assert(notice.Visible && !notice.FlashOn && notice.PrimaryText == "MODE: PARTY", "Notice renders visible non-flashing banner");
 
         var editIdle = BannerPresentation.Compute(idleView, settings, false, true, 0.0, 12.2);
-        Assert(editIdle.Visible && editIdle.PrimaryText == "DDO HEALER'S HELPER — DRAG TO POSITION" && editIdle.SecondaryText.Contains("13s"),
-            "Editing while idle renders drag placeholder with ceiling countdown");
+        Assert(editIdle.Visible && editIdle.PrimaryText == "DDO HEALER'S HELPER — DRAG TO POSITION"
+               && editIdle.SecondaryText.Contains("13s") && editIdle.SecondaryText.Contains("64px") && editIdle.SecondaryText.Contains("235"),
+            "Editing while idle renders drag/resize/wheel instructions with font size, opacity, and ceiling countdown");
 
         var hiddenIdle = BannerPresentation.Compute(idleView, settings, false, false, 0.0, 0.0);
         Assert(!hiddenIdle.Visible, "Idle non-editing non-demo frame is hidden");

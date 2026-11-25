@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Forms;
 using VoK.Sdk.Plugins;
 
@@ -76,37 +79,255 @@ internal sealed class HealersHelperUi : IPluginUI, IDisposable
 
 internal sealed class HealerControlForm : Form
 {
+    internal const string CompatibilityNoteText =
+        "Tested & working on live DDO + Lossless Scaling (Windows 11); not guaranteed on all configurations. " +
+        "Should also work on Linux via Wine/Proton (cross-compiled & CI-tested on Linux, live gameplay untested).";
+
     private sealed record PlayerChoice(ulong Id, string Name)
     {
         public override string ToString() => string.IsNullOrWhiteSpace(Name) ? $"ID {Id}" : Name;
+    }
+
+    private sealed class OfflineSettingsEngineView(string settingsFolder) : IHealerEngineView
+    {
+        private static readonly JsonSerializerOptions Json = new()
+        {
+            WriteIndented = true,
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
+        private Settings? _cached;
+        private DateTime _cachedWriteUtc = DateTime.MinValue;
+        private long _cachedLength = -1;
+        private int _revision = 1;
+
+        public string SettingsFolder { get; } = settingsFolder;
+        private string ConfigPath => Path.Combine(SettingsFolder, "healers-helper.json");
+
+        public IntPtr GameWindow => IntPtr.Zero;
+
+        public int SettingsRevision
+        {
+            get
+            {
+                _ = EnsureLoaded();
+                return _revision;
+            }
+        }
+
+        public int PeopleSaved => EnsureLoaded().PeopleSaved;
+
+        public Settings GetSettings() => EnsureLoaded().Copy();
+
+        public void SaveSettings(Settings settings)
+        {
+            var copy = settings.Copy();
+            var live = EnsureLoaded();
+            copy.CopyLiveStatsFrom(live);
+            Persist(copy);
+        }
+
+        public void SavePosition(double x, double y)
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.HudX = x;
+            copy.HudY = y;
+            Persist(copy);
+        }
+
+        public void SaveBannerLayout(double x, double y, int fontSizePixels, int bannerOpacity)
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.HudX = x;
+            copy.HudY = y;
+            copy.FontSizePixels = fontSizePixels;
+            copy.BannerOpacity = bannerOpacity;
+            Persist(copy);
+        }
+
+        public void SaveStatusPosition(double x, double y)
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.StatusHudX = x;
+            copy.StatusHudY = y;
+            Persist(copy);
+        }
+
+        public AlertBannerView View()
+        {
+            var s = EnsureLoaded();
+            return new AlertBannerView(
+                BannerSeverity.None,
+                s.Mode,
+                "",
+                "",
+                0,
+                null,
+                "",
+                null,
+                0,
+                "Waiting for game connection…",
+                "Targeting: idle",
+                s.PluginEnabled,
+                s.PeopleSaved);
+        }
+
+        public WatchedMemberSnapshot[] GetMembers() => Array.Empty<WatchedMemberSnapshot>();
+
+        public void TogglePluginEnabled()
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.PluginEnabled = !copy.PluginEnabled;
+            Persist(copy);
+        }
+
+        public void ToggleBannerHud()
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.HudEnabled = !copy.HudEnabled;
+            Persist(copy);
+        }
+
+        public void ResetPeopleSaved()
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.ResetLiveStats();
+            Persist(copy);
+        }
+
+        public string GetChatScorecard() => HealerStats.FormatChatScorecard(EnsureLoaded());
+
+        public bool CopyChatScorecard() => HealerEngine.TryCopyTextToClipboardSta(GetChatScorecard());
+
+        public bool FocusCurrentTarget() => false;
+
+        public void CycleMode()
+        {
+            var copy = EnsureLoaded().Copy();
+            copy.Mode = copy.Mode == TrackingMode.Party ? TrackingMode.SinglePlayer : TrackingMode.Party;
+            Persist(copy);
+        }
+
+        public bool TargetCriticalNow() => false;
+
+        public void Report(string message) { }
+
+        private Settings EnsureLoaded()
+        {
+            try
+            {
+                var info = new FileInfo(ConfigPath);
+                if (!info.Exists)
+                {
+                    if (_cached is null || _cachedLength != -1)
+                    {
+                        _cached = new Settings();
+                        _cachedWriteUtc = DateTime.MinValue;
+                        _cachedLength = -1;
+                        _revision++;
+                    }
+                    return _cached;
+                }
+
+                if (_cached is not null
+                    && info.LastWriteTimeUtc == _cachedWriteUtc
+                    && info.Length == _cachedLength)
+                {
+                    return _cached;
+                }
+
+                var loaded = JsonSerializer.Deserialize<Settings>(File.ReadAllText(ConfigPath), Json) ?? new Settings();
+                loaded.Validate();
+                _cached = loaded;
+                _cachedWriteUtc = info.LastWriteTimeUtc;
+                _cachedLength = info.Length;
+                _revision++;
+                return _cached;
+            }
+            catch
+            {
+                return _cached ??= new Settings();
+            }
+        }
+
+        private void Persist(Settings updated)
+        {
+            updated.Validate();
+            _cached = updated.Copy();
+            _revision++;
+            try
+            {
+                var store = new SettingsStore(SettingsFolder);
+                store.Save(updated);
+                var info = new FileInfo(store.ConfigPath);
+                if (info.Exists)
+                {
+                    _cachedWriteUtc = info.LastWriteTimeUtc;
+                    _cachedLength = info.Length;
+                }
+            }
+            catch { }
+        }
     }
 
     private readonly HealersHelperPlugin _plugin;
     private readonly Font _headerFont = new("Segoe UI", 9.5f, FontStyle.Bold);
     private readonly ToolTip _toolTip = new() { ShowAlways = true };
     private readonly Label _pluginStateLabel;
+    private readonly Label _bannerStateLabel;
     private readonly Label _peopleSavedLabel;
     private readonly Label _gamificationLabel = new() { Name = "GamificationSummaryLabel", AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(215, 225, 240) };
     private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
     private readonly Label _targetingLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(180, 210, 235) };
+    private readonly Label _compatibilityNoteLabel = new()
+    {
+        Name = "CompatibilityNoteLabel",
+        Text = CompatibilityNoteText,
+        AutoSize = true,
+        MaximumSize = new Size(348, 0),
+        Margin = new Padding(2, 4, 2, 2),
+        ForeColor = Color.FromArgb(165, 180, 200)
+    };
     private readonly ComboBox _modeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 115 };
     private readonly ComboBox _playerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 175 };
     private readonly ListBox _membersList = new() { Dock = DockStyle.Top, Height = 96, IntegralHeight = false, BackColor = Color.FromArgb(18, 22, 29), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 250 };
 
     private readonly Button _toggleBtn;
+    private readonly Button _toggleBannerBtn;
     private readonly Button _cycleBtn;
     private readonly Button _focusBtn;
     private readonly Button _targetCritBtn;
+    private readonly Button _moveBannerBtn;
     private readonly Button _resetSavedBtn;
     private readonly Button _copyScorecardBtn;
 
+    private OfflineSettingsEngineView? _offlineView;
     private bool _updatingSelectors;
     private int _lastTooltipRevision = -2;
+    private bool _lastTooltipLiveEngine;
     private string _lastMemberSignature = "";
     private string _lastPlayerSignature = "";
 
     internal ToolTip ButtonToolTip => _toolTip;
+
+    private IHealerEngineView ActiveView
+    {
+        get
+        {
+            if (_plugin.Engine is { } live)
+                return live;
+
+            string folder = _plugin.SettingsFolder;
+            if (_offlineView is null || !string.Equals(_offlineView.SettingsFolder, folder, StringComparison.Ordinal))
+            {
+                _offlineView = new OfflineSettingsEngineView(folder);
+            }
+
+            return _offlineView;
+        }
+    }
 
     public HealerControlForm(HealersHelperPlugin plugin)
     {
@@ -116,7 +337,16 @@ internal sealed class HealerControlForm : Form
             Name = "PluginStateLabel",
             Text = "Plugin: ON",
             AutoSize = true,
-            Margin = new Padding(2, 2, 14, 2),
+            Margin = new Padding(2, 2, 12, 2),
+            Font = _headerFont,
+            ForeColor = Color.FromArgb(122, 229, 130)
+        };
+        _bannerStateLabel = new Label
+        {
+            Name = "BannerStateLabel",
+            Text = "Banner: ON",
+            AutoSize = true,
+            Margin = new Padding(2, 2, 12, 2),
             Font = _headerFont,
             ForeColor = Color.FromArgb(122, 229, 130)
         };
@@ -134,7 +364,7 @@ internal sealed class HealerControlForm : Form
         FormBorderStyle = FormBorderStyle.None;
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Size = new Size(440, 380);
+        Size = new Size(440, 410);
         MinimumSize = new Size(380, 320);
         AutoScroll = true;
         BackColor = Color.FromArgb(24, 28, 36);
@@ -146,16 +376,16 @@ internal sealed class HealerControlForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(6)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 7; i++)
+        for (int i = 0; i < 8; i++)
         {
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
 
-        // Row 0: Prominent live Plugin ON/OFF and People Saved + Prestige Rank header
+        // Row 0: Prominent live Plugin ON/OFF, Banner ON/OFF, and People Saved + Prestige Rank header
         var summaryRow = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -165,6 +395,7 @@ internal sealed class HealerControlForm : Form
             Margin = new Padding(0, 0, 0, 2)
         };
         summaryRow.Controls.Add(_pluginStateLabel);
+        summaryRow.Controls.Add(_bannerStateLabel);
         summaryRow.Controls.Add(_peopleSavedLabel);
         layout.Controls.Add(summaryRow, 0, 0);
 
@@ -181,25 +412,31 @@ internal sealed class HealerControlForm : Form
             Margin = new Padding(0, 0, 0, 4)
         };
 
-        _toggleBtn = new Button { Name = "TogglePluginButton", Text = "Toggle ON/OFF", AutoSize = true };
-        _cycleBtn = new Button { Name = "CycleModeButton", Text = "Cycle Mode", AutoSize = true };
-        _focusBtn = new Button { Name = "FocusTargetButton", Text = "Focus Target", AutoSize = true };
-        _targetCritBtn = new Button { Name = "TargetCriticalButton", Text = "Target Critical", AutoSize = true };
-        var previewBtn = new Button { Name = "PreviewBannerButton", Text = "Preview Banner", AutoSize = true };
-        var moveBannerBtn = new Button { Name = "MoveBannerButton", Text = "Move Banner", AutoSize = true };
-        var moveStatusBtn = new Button { Name = "MoveStatusButton", Text = "Move Status", AutoSize = true };
-        _copyScorecardBtn = new Button { Name = "CopyScorecardButton", Text = "Copy Chat Card", AutoSize = true };
-        _resetSavedBtn = new Button { Name = "ResetSavedButton", Text = "Reset Saved", AutoSize = true };
-        var settingsBtn = new Button { Name = "SettingsButton", Text = "Settings...", AutoSize = true };
+        _toggleBtn = MakeActionButton("TogglePluginButton", "Toggle ON/OFF");
+        _toggleBannerBtn = MakeActionButton("ToggleBannerButton", "Banner: ON");
+        _cycleBtn = MakeActionButton("CycleModeButton", "Cycle Mode");
+        _focusBtn = MakeActionButton("FocusTargetButton", "Focus Target");
+        _targetCritBtn = MakeActionButton("TargetCriticalButton", "Target Critical");
+        var previewBtn = MakeActionButton("PreviewBannerButton", "Preview Banner");
+        _moveBannerBtn = MakeActionButton("MoveBannerButton", "Move / Resize Banner");
+        var moveStatusBtn = MakeActionButton("MoveStatusButton", "Move Status");
+        _copyScorecardBtn = MakeActionButton("CopyScorecardButton", "Copy Chat Card");
+        _resetSavedBtn = MakeActionButton("ResetSavedButton", "Reset Saved");
+        var settingsBtn = MakeActionButton("SettingsButton", "Settings...");
 
         _toggleBtn.Click += (_, _) =>
         {
-            _plugin.Engine?.TogglePluginEnabled();
+            ActiveView.TogglePluginEnabled();
+            RefreshState();
+        };
+        _toggleBannerBtn.Click += (_, _) =>
+        {
+            ActiveView.ToggleBannerHud();
             RefreshState();
         };
         _cycleBtn.Click += (_, _) =>
         {
-            _plugin.Engine?.CycleMode();
+            ActiveView.CycleMode();
             RefreshState();
         };
         _focusBtn.Click += (_, _) =>
@@ -213,34 +450,29 @@ internal sealed class HealerControlForm : Form
             RefreshState();
         };
         previewBtn.Click += (_, _) => _plugin.Hud?.Preview();
-        moveBannerBtn.Click += (_, _) => _plugin.Hud?.Move();
+        _moveBannerBtn.Click += (_, _) => _plugin.Hud?.Move();
         moveStatusBtn.Click += (_, _) => _plugin.Hud?.MoveStatus();
         _copyScorecardBtn.Click += (_, _) =>
         {
-            _plugin.Engine?.CopyChatScorecard();
+            ActiveView.CopyChatScorecard();
             RefreshState();
         };
         _resetSavedBtn.Click += (_, _) =>
         {
-            _plugin.Engine?.ResetPeopleSaved();
+            ActiveView.ResetPeopleSaved();
             RefreshState();
         };
         settingsBtn.Click += (_, _) =>
         {
-            if (_plugin.Engine is not { } engine)
-            {
-                return;
-            }
-
-            using var dialog = new SettingsDialog(engine);
+            using var dialog = new SettingsDialog(ActiveView);
             dialog.ShowDialog(this);
             RefreshState();
         };
 
         buttons.Controls.AddRange(new Control[]
         {
-            _toggleBtn, _cycleBtn, _focusBtn, _targetCritBtn, previewBtn,
-            moveBannerBtn, moveStatusBtn, _copyScorecardBtn, _resetSavedBtn, settingsBtn
+            _toggleBtn, _toggleBannerBtn, _cycleBtn, _focusBtn, _targetCritBtn, previewBtn,
+            _moveBannerBtn, moveStatusBtn, _copyScorecardBtn, _resetSavedBtn, settingsBtn
         });
         layout.Controls.Add(buttons, 0, 2);
 
@@ -274,9 +506,21 @@ internal sealed class HealerControlForm : Form
         // Row 6: Live watched members summary / HP list
         layout.Controls.Add(_membersList, 0, 6);
 
+        // Row 7: Platform & Lossless Scaling compatibility note
+        layout.Controls.Add(_compatibilityNoteLabel, 0, 7);
+
         Controls.Add(layout);
 
-        ApplyTooltips(new Settings(), -1);
+        Resize += (_, _) =>
+        {
+            int maxNoteWidth = Math.Max(340, ClientSize.Width - 32);
+            if (_compatibilityNoteLabel.MaximumSize.Width != maxNoteWidth)
+            {
+                _compatibilityNoteLabel.MaximumSize = new Size(maxNoteWidth, 0);
+            }
+        };
+
+        ApplyTooltips(new Settings(), -1, false);
 
         _refresh.Tick += (_, _) => RefreshState();
         VisibleChanged += (_, _) =>
@@ -293,29 +537,41 @@ internal sealed class HealerControlForm : Form
         RefreshState();
     }
 
-    private void ApplyTooltips(Settings settings, int revision)
+    private static Button MakeActionButton(string name, string text) => new()
     {
-        if (revision == _lastTooltipRevision) return;
+        Name = name,
+        Text = text,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink
+    };
+
+    private void ApplyTooltips(Settings settings, int revision, bool isLiveEngine)
+    {
+        if (revision == _lastTooltipRevision && isLiveEngine == _lastTooltipLiveEngine) return;
         _lastTooltipRevision = revision;
+        _lastTooltipLiveEngine = isLiveEngine;
 
         static string WithChord(string description, HotkeyBinding binding) =>
             binding.IsEmpty ? $"{description} (Hotkey: None)" : $"{description} ({binding.Format()})";
 
         _toolTip.SetToolTip(_toggleBtn, WithChord("Master ON/OFF switch", settings.TogglePluginHotkey));
+        _toolTip.SetToolTip(_toggleBannerBtn, WithChord("Enable or disable center alert banner (targeting & stats stay active)", settings.ToggleBannerHotkey));
         _toolTip.SetToolTip(_cycleBtn, WithChord("Toggle Party / Single-Player mode", settings.ToggleModeHotkey));
         _toolTip.SetToolTip(_focusBtn, WithChord("Focus currently selected DDO player", settings.FocusTargetHotkey));
         _toolTip.SetToolTip(_targetCritBtn, WithChord("Select lowest/critical watched player now", settings.TargetCriticalHotkey));
+        _toolTip.SetToolTip(_moveBannerBtn, "Unlock banner for 20s: drag center to move, drag edges/corners or wheel to resize, Ctrl+wheel for opacity");
         _toolTip.SetToolTip(_resetSavedBtn, WithChord("Reset People Saved and all healer records", settings.ResetSavedHotkey));
         _toolTip.SetToolTip(_copyScorecardBtn, WithChord("Copy ASCII healer scorecard for DDO chat", settings.CopyScorecardHotkey));
     }
 
     private void OnModeChanged()
     {
-        if (_updatingSelectors || _plugin.Engine is not { } engine || _modeCombo.SelectedItem is not TrackingMode mode)
+        if (_updatingSelectors || _modeCombo.SelectedItem is not TrackingMode mode)
         {
             return;
         }
 
+        var engine = ActiveView;
         var s = engine.GetSettings();
         if (s.Mode == mode)
         {
@@ -329,11 +585,12 @@ internal sealed class HealerControlForm : Form
 
     private void OnPlayerSelected()
     {
-        if (_updatingSelectors || _plugin.Engine is not { } engine || _playerCombo.SelectedItem is not PlayerChoice choice)
+        if (_updatingSelectors || _playerCombo.SelectedItem is not PlayerChoice choice)
         {
             return;
         }
 
+        var engine = ActiveView;
         var s = engine.GetSettings();
         if (s.Mode == TrackingMode.SinglePlayer
             && s.FocusedPlayerId == choice.Id
@@ -395,25 +652,14 @@ internal sealed class HealerControlForm : Form
     {
         if (IsDisposed || Disposing) return;
 
-        var engine = _plugin.Engine;
-        if (engine is null)
-        {
-            _pluginStateLabel.Text = "Plugin: ON";
-            _pluginStateLabel.ForeColor = Color.FromArgb(122, 229, 130);
-            _peopleSavedLabel.Text = "People Saved: 0 (Initiate)";
-            _gamificationLabel.Text = "Streak: 0 (Best 0) • 1% Club: 0 • Reflex: —";
-            _statusLabel.Text = "Waiting for game connection…";
-            _targetingLabel.Text = "Targeting: idle";
-            return;
-        }
+        var liveEngine = _plugin.Engine;
+        var viewEngine = ActiveView;
+        int rev = viewEngine.SettingsRevision;
+        var settings = viewEngine.GetSettings();
+        ApplyTooltips(settings, rev, liveEngine is not null);
 
-        int rev = engine.SettingsRevision;
-        var settings = engine.GetSettings();
-        ApplyTooltips(settings, rev);
-
-        var view = engine.View();
-        var members = engine.GetMembers();
-        string hudStatus = _plugin.Hud?.Status ?? "HUD starting";
+        var view = viewEngine.View();
+        var members = viewEngine.GetMembers();
 
         int saved = Math.Max(0, view.PeopleSaved);
         string rank = HealerStats.RankForSaves(saved);
@@ -421,15 +667,37 @@ internal sealed class HealerControlForm : Form
         _pluginStateLabel.ForeColor = settings.PluginEnabled
             ? Color.FromArgb(122, 229, 130)
             : Color.FromArgb(255, 130, 130);
+
+        _bannerStateLabel.Text = settings.HudEnabled ? "Banner: ON" : "Banner: OFF";
+        _bannerStateLabel.ForeColor = settings.HudEnabled
+            ? Color.FromArgb(122, 229, 130)
+            : Color.FromArgb(240, 190, 95);
+
+        string bannerBtnText = settings.HudEnabled ? "Banner: ON" : "Banner: OFF";
+        if (!string.Equals(_toggleBannerBtn.Text, bannerBtnText, StringComparison.Ordinal))
+        {
+            _toggleBannerBtn.Text = bannerBtnText;
+            _toggleBannerBtn.Parent?.PerformLayout();
+        }
+
         _peopleSavedLabel.Text = string.Create(CultureInfo.InvariantCulture, $"People Saved: {saved} ({rank})");
         _gamificationLabel.Text = FormatGamificationSummary(settings);
 
-        _statusLabel.Text = string.IsNullOrWhiteSpace(view.StatusLine)
-            ? hudStatus
-            : $"{view.StatusLine} • {hudStatus}";
-        _targetingLabel.Text = string.IsNullOrWhiteSpace(view.TargetingStatus)
-            ? $"Targeting: {settings.TargetingMethod}"
-            : view.TargetingStatus;
+        if (liveEngine is null)
+        {
+            _statusLabel.Text = "Waiting for game connection…";
+            _targetingLabel.Text = "Targeting: idle";
+        }
+        else
+        {
+            string hudStatus = _plugin.Hud?.Status ?? "HUD starting";
+            _statusLabel.Text = string.IsNullOrWhiteSpace(view.StatusLine)
+                ? hudStatus
+                : $"{view.StatusLine} • {hudStatus}";
+            _targetingLabel.Text = string.IsNullOrWhiteSpace(view.TargetingStatus)
+                ? $"Targeting: {settings.TargetingMethod}"
+                : view.TargetingStatus;
+        }
 
         UpdateSelectors(settings, members);
         UpdateMembersList(members);

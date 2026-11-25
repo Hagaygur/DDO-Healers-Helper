@@ -20,9 +20,31 @@ public sealed class HealersHelperPlugin : IDdoPlugin
     private HealerEngine? _engine;
     private HealersHelperUi? _ui;
     private BannerHudController? _hud;
+    private string _settingsFolder = DefaultSettingsFolder();
 
     internal IHealerEngineView? Engine => Volatile.Read(ref _engine);
     internal BannerHudController? Hud => Volatile.Read(ref _hud);
+
+    internal string SettingsFolder
+    {
+        get
+        {
+            string current = Volatile.Read(ref _settingsFolder);
+            if (!string.IsNullOrWhiteSpace(current))
+                return current;
+
+            string fallback = DefaultSettingsFolder();
+            Volatile.Write(ref _settingsFolder, fallback);
+            return fallback;
+        }
+        set => Volatile.Write(ref _settingsFolder, string.IsNullOrWhiteSpace(value) ? DefaultSettingsFolder() : value);
+    }
+
+    private static string DefaultSettingsFolder() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Dungeon Helper",
+        "plugins",
+        "HealersHelper");
 
     public IPluginUI GetPluginUI()
     {
@@ -37,12 +59,13 @@ public sealed class HealersHelperPlugin : IDdoPlugin
         Interlocked.Exchange(ref _hud, null)?.Dispose();
         Interlocked.Exchange(ref _engine, null)?.Dispose();
 
-        if (string.IsNullOrWhiteSpace(folder))
+        if (!string.IsNullOrWhiteSpace(folder))
         {
-            folder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "Dungeon Helper",
-                "HealersHelper");
+            SettingsFolder = folder;
+        }
+        else
+        {
+            folder = SettingsFolder;
         }
 
         var engine = new HealerEngine(gameDataProvider, folder);

@@ -73,6 +73,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     private int? _prevSelfSp;
     private long _lastSoundGen;
     private long _lastAutoTargetGen;
+    private ulong _lastAutoTargetPlayerId;
     private double _lastErrorLog = -100;
 
     internal static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
@@ -179,6 +180,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 ClearSelfCast();
                 _prevSelfSp = null;
                 _lastAutoTargetGen = 0;
+                _lastAutoTargetPlayerId = 0;
                 _lastSoundGen = 0;
             }
         }
@@ -250,6 +252,20 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         }
     }
 
+    public void SaveBannerLayout(double x, double y, int fontSizePixels, int bannerOpacity)
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            var copy = _settings.Copy();
+            copy.HudX = x;
+            copy.HudY = y;
+            copy.FontSizePixels = fontSizePixels;
+            copy.BannerOpacity = bannerOpacity;
+            CommitSettingsLocked(copy);
+        }
+    }
+
     public void SaveStatusPosition(double x, double y)
     {
         lock (_gate)
@@ -277,6 +293,15 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         {
             if (_disposed) return;
             TogglePluginEnabledLocked(Now);
+        }
+    }
+
+    public void ToggleBannerHud()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            ToggleBannerHudLocked(Now);
         }
     }
 
@@ -324,7 +349,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         return TryCopyTextToClipboardSta(card);
     }
 
-    private static bool TryCopyTextToClipboardSta(string text)
+    internal static bool TryCopyTextToClipboardSta(string text)
     {
         if (string.IsNullOrEmpty(text)) return false;
 
@@ -482,7 +507,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
     private void PollForegroundHotkeysLocked(double now)
     {
-        if (!IsGameForeground())
+        if (!IsGameForeground() && !(HudHostHelper.IsWineRuntime && GetForegroundWindow() == IntPtr.Zero))
         {
             _hotkeys.ClearPollState();
             return;
@@ -495,11 +520,12 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         bool shift = IsKeyDown(VkShift);
         bool alt = IsKeyDown(VkMenu);
 
-        Span<int> keys = stackalloc int[6];
+        Span<int> keys = stackalloc int[7];
         int count = 0;
         AddUniqueKey(keys, ref count, _settings.TogglePluginHotkey.VirtualKey);
         if (_settings.PluginEnabled)
         {
+            AddUniqueKey(keys, ref count, _settings.ToggleBannerHotkey.VirtualKey);
             AddUniqueKey(keys, ref count, _settings.FocusTargetHotkey.VirtualKey);
             AddUniqueKey(keys, ref count, _settings.ToggleModeHotkey.VirtualKey);
             AddUniqueKey(keys, ref count, _settings.TargetCriticalHotkey.VirtualKey);
@@ -538,6 +564,11 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         if (!_settings.PluginEnabled)
             return;
 
+        if (_hotkeys.ShouldTrigger(_settings.ToggleBannerHotkey, virtualKey, ctrl, shift, alt, now))
+        {
+            ToggleBannerHudLocked(now);
+            return;
+        }
         if (_hotkeys.ShouldTrigger(_settings.FocusTargetHotkey, virtualKey, ctrl, shift, alt, now))
         {
             FocusCurrentTargetLocked(now);
@@ -584,6 +615,19 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         EvaluateLocked(now);
     }
 
+    private void ToggleBannerHudLocked(double now)
+    {
+        var updated = _settings.Copy();
+        updated.HudEnabled = !updated.HudEnabled;
+        CommitSettingsLocked(updated);
+        if (updated.HudEnabled && updated.PluginEnabled)
+        {
+            _state.SetNotice("CENTER BANNER: ON", "Flashing center alerts enabled", 1.8, now);
+        }
+
+        EvaluateLocked(now);
+    }
+
     private void ResetTransientOnDisableLocked()
     {
         _state.Reset();
@@ -595,6 +639,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         ClearSelfCast();
         _prevSelfSp = null;
         _lastAutoTargetGen = 0;
+        _lastAutoTargetPlayerId = 0;
         _lastSoundGen = 0;
     }
 
@@ -691,9 +736,13 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
         ulong priorSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
         bool selected = _selector.TrySelect(target.Id, target.Name, target.PartySlotIndex, _settings, now, bypassCooldown);
-        if (selected && _settings.RestorePreviousTargetAfterHeal)
+        if (selected)
         {
-            RecordRestoreSwitchLocked(priorSelected, current, target, now);
+            _lastAutoTargetPlayerId = target.Id;
+            if (_settings.RestorePreviousTargetAfterHeal)
+            {
+                RecordRestoreSwitchLocked(priorSelected, current, target, now);
+            }
         }
         if (bypassCooldown)
             _state.SetNotice(selected ? $"TARGETED: {target.Name}" : "TARGET FAILED", _selector.LastStatus, 1.5, now);
@@ -719,6 +768,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             ClearSelfCast();
             _prevSelfSp = null;
             _lastAutoTargetGen = 0;
+            _lastAutoTargetPlayerId = 0;
             _lastSoundGen = 0;
         }
 
@@ -729,6 +779,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             Streak.Reset();
             Reflex.Reset();
             Restore.Reset();
+            _lastAutoTargetPlayerId = 0;
             _inTown = false;
             return;
         }
@@ -938,54 +989,71 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         AlertBannerView view = _state.Evaluate(current, _settings, now, statusLine, selectorStatus, _inTown);
 
         if (_settings.PluginEnabled
-            && view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown
-            && view.AlertPlayerId is { } alertId)
+            && (view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown || view.AlertPlayerId.HasValue))
         {
-            if (_settings.SoundOnAlert && view.AlertGeneration != _lastSoundGen)
+            if (view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown
+                && view.AlertPlayerId is { } alertId)
             {
-                _lastSoundGen = view.AlertGeneration;
-                try { SystemSounds.Exclamation.Play(); }
-                catch { }
-            }
-
-            if (_selector is not null
-                && _settings.AutoTargetOnAlert
-                && _settings.TargetingMethod != TargetMethod.Off
-                && view.AlertGeneration != _lastAutoTargetGen
-                && IsGameOrOverlayForeground())
-            {
-                var target = current.FirstOrDefault(m => m.Id == alertId);
-                if (target is not null)
+                if (_settings.SoundOnAlert && view.AlertGeneration != _lastSoundGen)
                 {
-                    ulong priorSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
-                    bool selected = _selector.TrySelect(target.Id, target.Name, target.PartySlotIndex, _settings, now, bypassCooldown: false);
-                    if (selected && _settings.RestorePreviousTargetAfterHeal)
+                    _lastSoundGen = view.AlertGeneration;
+                    try { SystemSounds.Exclamation.Play(); }
+                    catch { }
+                }
+
+                if (_selector is not null
+                    && _settings.AutoTargetOnAlert
+                    && _settings.TargetingMethod != TargetMethod.Off
+                    && view.AlertGeneration != _lastAutoTargetGen
+                    && IsGameOrOverlayForeground())
+                {
+                    var target = current.FirstOrDefault(m => m.Id == alertId);
+                    if (target is not null)
                     {
-                        RecordRestoreSwitchLocked(priorSelected, current, target, now);
+                        int recoverAt = Math.Min(100, _settings.HpThresholdPercent + _settings.RecoveryHysteresisPercent);
+                        bool prevHealedBypass = _lastAutoTargetPlayerId != 0
+                            && _lastAutoTargetPlayerId != alertId
+                            && TargetRestoreTracker.IsPreviousTargetHealedOrGone(current, _lastAutoTargetPlayerId, recoverAt);
+
+                        ulong priorSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
+                        bool selected = _selector.TrySelect(
+                            target.Id,
+                            target.Name,
+                            target.PartySlotIndex,
+                            _settings,
+                            now,
+                            bypassCooldown: prevHealedBypass);
+                        if (selected && _settings.RestorePreviousTargetAfterHeal)
+                        {
+                            RecordRestoreSwitchLocked(priorSelected, current, target, now);
+                        }
+                        ulong currentSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
+                        if (selected || currentSelected == target.Id)
+                        {
+                            _lastAutoTargetGen = view.AlertGeneration;
+                            _lastAutoTargetPlayerId = target.Id;
+                        }
+                        view = view with { TargetingStatus = _selector.LastStatus };
                     }
-                    ulong currentSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
-                    if (selected || currentSelected == target.Id)
-                    {
-                        _lastAutoTargetGen = view.AlertGeneration;
-                    }
-                    view = view with { TargetingStatus = _selector.LastStatus };
                 }
             }
         }
-
-        ulong latestSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
-        if (Restore.EvaluateRestore(
-                current,
-                _settings,
-                latestSelected,
-                view.Severity,
-                view.AlertPlayerId,
-                _inTown,
-                IsGameOrOverlayForeground(),
-                now) is { } candidate)
+        else
         {
-            _selector?.TryRestore(candidate, _settings);
-            view = view with { TargetingStatus = _selector?.LastStatus ?? view.TargetingStatus };
+            ulong latestSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
+            if (Restore.EvaluateRestore(
+                    current,
+                    _settings,
+                    latestSelected,
+                    view.Severity,
+                    view.AlertPlayerId,
+                    _inTown,
+                    IsGameOrOverlayForeground(),
+                    now) is { } candidate)
+            {
+                _selector?.TryRestore(candidate, _settings);
+                view = view with { TargetingStatus = _selector?.LastStatus ?? view.TargetingStatus };
+            }
         }
 
         Reflex.OnAlertEvaluated(view, now);
@@ -1069,7 +1137,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     {
         if (IsGameForeground()) return true;
         IntPtr fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero) return false;
+        if (fg == IntPtr.Zero) return HudHostHelper.IsWineRuntime;
         _ = GetWindowThreadProcessId(fg, out uint pid);
         if (pid == 0) return false;
         if (pid == (uint)Environment.ProcessId) return true;
@@ -1138,6 +1206,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             Reflex.Reset();
             Restore.Reset();
             _hotkeys.Reset();
+            _lastAutoTargetPlayerId = 0;
             Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
             Volatile.Write(ref _view, new AlertBannerView(
                 BannerSeverity.None,

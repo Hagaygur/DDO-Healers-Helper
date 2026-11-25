@@ -61,7 +61,7 @@ internal sealed class BannerHudController : IDisposable
                     if (command == HudCommand.Stop)
                     {
                         tick.Stop();
-                        try { banner.FlushPositionIfDirty(); } catch { }
+                        try { banner.FlushLayoutIfDirty(); } catch { }
                         try { statusHud.FlushPositionIfDirty(); } catch { }
                         banner.AllowClose = true;
                         statusHud.AllowClose = true;

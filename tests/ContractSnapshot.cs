@@ -70,6 +70,16 @@ internal static class ContractSnapshot
         var healedAlice = new[] { new WatchedMemberSnapshot(2, "Alice", 180, 200, 1, true, false) };
         _ = restoreTracker.EvaluateRestore(healedAlice, settings, 2, BannerSeverity.None, null, false, true, 1.2);
         var restoredCandidate = restoreTracker.EvaluateRestore(healedAlice, settings, 2, BannerSeverity.None, null, false, true, 1.5);
+        var holdTracker = new TargetRestoreTracker();
+        holdTracker.RecordSwitch(900, "Boss", -1, new WatchedMemberSnapshot(2, "Alice", 40, 200, 1, true, false), 53, 1.0);
+        var aliceHealedBobLow = new[]
+        {
+            new WatchedMemberSnapshot(2, "Alice", 180, 200, 1, true, false),
+            new WatchedMemberSnapshot(3, "Bob", 50, 200, 2, true, false)
+        };
+        _ = holdTracker.EvaluateRestore(aliceHealedBobLow, settings, 2, BannerSeverity.LowHp, 3, false, true, 1.2);
+        bool universalHoldActive = holdTracker.EvaluateRestore(aliceHealedBobLow, new Settings { AutoTargetOnAlert = false }, 2, BannerSeverity.None, null, false, true, 2.0) is null
+            && holdTracker.IsActive;
         compatibility["target-policy.sdk-primary"] = sdkDecision.Action.ToString();
         compatibility["target-policy.party-fallback"] = fallbackDecision.Action.ToString();
         compatibility["target-policy.party-action-1"] = TargetPolicy.PartyActionForSlot(1)!;
@@ -96,8 +106,16 @@ internal static class ContractSnapshot
         var features = new SortedDictionary<string, object>
         {
             ["banner.primary-low"] = low.PrimaryText,
+            ["banner.enabled-default"] = settings.HudEnabled,
             ["banner.font-default"] = settings.FontSizePixels,
             ["banner.opacity-default"] = settings.BannerOpacity,
+            ["banner.opacity-min"] = BannerPresentation.MinBannerOpacity,
+            ["banner.default-low-bg-hex"] = settings.LowHpBgHex,
+            ["banner.default-crit-bg-hex"] = settings.CriticalBgHex,
+            ["banner.disabled-suppresses-live"] = !BannerPresentation.Compute(low, new Settings { HudEnabled = false }, demo: false, editing: false, 0.0, 0.0).Visible,
+            ["banner.disabled-allows-preview"] = BannerPresentation.Compute(low, new Settings { HudEnabled = false }, demo: true, editing: false, 0.0, 0.0).Visible,
+            ["banner.edit-hit-corners-and-move"] = BannerPresentation.ClassifyEditHit(500, 130, 4, 4) == BannerEditDragMode.ResizeTopLeft
+                && BannerPresentation.ClassifyEditHit(500, 130, 250, 65) == BannerEditDragMode.Move,
             ["banner.flash-enabled-default"] = settings.FlashBanner,
             ["banner.flash-interval-default-ms"] = settings.FlashIntervalMs,
             ["banner.flash-alternates"] = flashOn.FlashOn && !flashOff.FlashOn,
@@ -123,7 +141,9 @@ internal static class ContractSnapshot
             ["target-policy.restore-sdk"] = restoreSdkDecision.Action.ToString(),
             ["target-policy.restore-rejects-dead-mob"] = restoreDeadMobDecision.Action == TargetActionKind.None,
             ["target-restore.healed-restores-original"] = restoredCandidate is { TargetId: 900UL },
+            ["target-restore.universal-ally-hold"] = universalHoldActive,
             ["hotkey.toggle-plugin-default"] = settings.TogglePluginHotkey.Format(),
+            ["hotkey.toggle-banner-default"] = settings.ToggleBannerHotkey.Format(),
             ["hotkey.focus-default"] = settings.FocusTargetHotkey.Format(),
             ["hotkey.toggle-default"] = settings.ToggleModeHotkey.Format(),
             ["hotkey.critical-default"] = settings.TargetCriticalHotkey.Format(),
