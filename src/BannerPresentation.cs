@@ -18,6 +18,9 @@ internal static class BannerPresentation
     public const int MaxFontSizePixels = 140;
     public const int MinFlashIntervalMs = 100;
     public const int MaxFlashIntervalMs = 1000;
+    public const int MinBannerOpacity = 80;
+    public const int MaxBannerOpacity = 255;
+    public const int DefaultBannerOpacity = 235;
 
     public static BannerFrame Compute(
         AlertBannerView view,
@@ -32,10 +35,11 @@ internal static class BannerPresentation
 
         int fontSize = Math.Clamp(settings.FontSizePixels, MinFontSizePixels, MaxFontSizePixels);
         int flashIntervalMs = Math.Clamp(settings.FlashIntervalMs, MinFlashIntervalMs, MaxFlashIntervalMs);
+        int opacity = Math.Clamp(settings.BannerOpacity, MinBannerOpacity, MaxBannerOpacity);
         double elapsedMs = double.IsFinite(elapsedAlertSeconds) && elapsedAlertSeconds > 0
             ? elapsedAlertSeconds * 1000.0
             : 0.0;
-        bool flashPhase = (long)Math.Floor(elapsedMs / flashIntervalMs) % 2 == 0;
+        bool flashPhase = !settings.FlashBanner || ((long)Math.Floor(elapsedMs / flashIntervalMs) % 2 == 0);
 
         BannerSeverity effectiveSeverity = view.Severity;
         string primary = view.PrimaryText ?? "";
@@ -65,16 +69,16 @@ internal static class BannerPresentation
             case BannerSeverity.CriticalDown:
             {
                 int text = flashPhase ? unchecked((int)0xFFFFFFFF) : unchecked((int)0xFFFF4D5A);
-                int bg = flashPhase ? unchecked((int)0xF0960A14) : unchecked((int)0xEC0A0A0E);
+                int bgBase = flashPhase ? unchecked((int)0xF0960A14) : unchecked((int)0xEC0A0A0E);
                 int border = flashPhase ? unchecked((int)0xFFFFD644) : unchecked((int)0xFFFF3848);
-                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, bg, border);
+                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border);
             }
             case BannerSeverity.LowHp:
             {
                 int text = flashPhase ? unchecked((int)0xFFFFFFFF) : unchecked((int)0xFFFFBE3B);
-                int bg = flashPhase ? unchecked((int)0xEEB84200) : unchecked((int)0xEC0B0D12);
+                int bgBase = flashPhase ? unchecked((int)0xEEB84200) : unchecked((int)0xEC0B0D12);
                 int border = flashPhase ? unchecked((int)0xFFFFE066) : unchecked((int)0xFFFF9E1B);
-                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, bg, border);
+                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border);
             }
             case BannerSeverity.Notice:
                 return new BannerFrame(
@@ -84,7 +88,7 @@ internal static class BannerPresentation
                     fontSize,
                     false,
                     unchecked((int)0xFF7AD7FF),
-                    unchecked((int)0xDF141B26),
+                    ScaleBackgroundAlpha(unchecked((int)0xDF141B26), opacity),
                     unchecked((int)0xFF3E8EDE));
             case BannerSeverity.None:
             default:
@@ -97,12 +101,30 @@ internal static class BannerPresentation
                         fontSize,
                         false,
                         unchecked((int)0xFFFFFFFF),
-                        unchecked((int)0xD8141820),
+                        ScaleBackgroundAlpha(unchecked((int)0xD8141820), opacity),
                         unchecked((int)0xFF56A8FF));
                 }
 
                 return new BannerFrame(false, "", "", fontSize, false, 0, 0, 0);
         }
+    }
+
+    private static int ScaleBackgroundAlpha(int argb, int opacity)
+    {
+        if (opacity == DefaultBannerOpacity)
+        {
+            return argb;
+        }
+
+        uint raw = unchecked((uint)argb);
+        if (opacity >= MaxBannerOpacity)
+        {
+            return unchecked((int)((raw & 0x00FFFFFFu) | 0xFF000000u));
+        }
+
+        int baseAlpha = (int)((raw >> 24) & 0xFFu);
+        uint scaled = (uint)Math.Clamp((int)Math.Round(baseAlpha * (opacity / (double)DefaultBannerOpacity)), 40, 255);
+        return unchecked((int)((raw & 0x00FFFFFFu) | (scaled << 24)));
     }
 
     public static (int X, int Y) ComputePosition(

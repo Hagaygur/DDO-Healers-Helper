@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using VoK.HealersHelper;
 
@@ -70,27 +71,56 @@ internal static class ContractSnapshot
         var flashOff = BannerPresentation.Compute(low, settings, demo: false, editing: false, settings.FlashIntervalMs / 1000.0, 0.0);
         var statusParty = StatusHudPresentation.Compute(low with { PeopleSaved = 3 }, settings, false, 0.0);
         var statusOff = StatusHudPresentation.Compute(low with { PluginEnabled = false }, disabledSettings, false, 0.0);
+        string sampleScorecard = HealerStats.FormatChatScorecard(new Settings
+        {
+            PeopleSaved = 42,
+            CurrentSaveStreak = 7,
+            BestSaveStreak = 12,
+            OnePercentClubSaves = 3,
+            ClosestCallPlayerName = "Tanky",
+            ClosestCallPreHealPercent = 2.5,
+            ClosestCallPreHealHp = 5,
+            BestReflexMs = 180,
+            AvgReflexMs = 260,
+            ReflexSampleCount = 9,
+            BiggestOverkillSaved = 310
+        });
 
         var features = new SortedDictionary<string, object>
         {
             ["banner.primary-low"] = low.PrimaryText,
             ["banner.font-default"] = settings.FontSizePixels,
+            ["banner.opacity-default"] = settings.BannerOpacity,
+            ["banner.flash-enabled-default"] = settings.FlashBanner,
             ["banner.flash-interval-default-ms"] = settings.FlashIntervalMs,
             ["banner.flash-alternates"] = flashOn.FlashOn && !flashOff.FlashOn,
             ["banner.capture-exclude-default"] = settings.ExcludeFromCapture,
             ["healer.plugin-enabled-default"] = settings.PluginEnabled,
+            ["healer.include-self-default"] = settings.IncludeSelfInPartyMode,
+            ["healer.suppress-in-town-default"] = settings.SuppressAlertsInTown,
             ["healer.threshold-default"] = settings.HpThresholdPercent,
             ["healer.hysteresis-default"] = settings.RecoveryHysteresisPercent,
             ["healer.dead-alert-default-seconds"] = settings.DeadAlertSeconds,
+            ["healer.max-alert-default-seconds"] = settings.MaxAlertSeconds,
+            ["saves.window-default-seconds"] = settings.SaveWindowSeconds,
+            ["saves.cast-window-default-seconds"] = settings.SelfCastWindowSeconds,
+            ["saves.min-heal-delta-default"] = settings.MinHealDelta,
+            ["saves.show-notice-default"] = settings.ShowSavedNotice,
+            ["gamification.rank-0"] = HealerStats.RankForSaves(0),
+            ["gamification.rank-250"] = HealerStats.RankForSaves(250),
+            ["gamification.scorecard-ascii-valid"] = sampleScorecard.Length <= HealerStats.MaxScorecardLength && sampleScorecard.All(c => c is >= (char)0x20 and <= (char)0x7E),
             ["auto-target.enabled-default"] = settings.AutoTargetOnAlert,
             ["auto-target.cooldown-default-seconds"] = settings.AutoTargetCooldownSeconds,
             ["hotkey.toggle-plugin-default"] = settings.TogglePluginHotkey.Format(),
             ["hotkey.focus-default"] = settings.FocusTargetHotkey.Format(),
             ["hotkey.toggle-default"] = settings.ToggleModeHotkey.Format(),
             ["hotkey.critical-default"] = settings.TargetCriticalHotkey.Format(),
+            ["hotkey.reset-saved-default"] = settings.ResetSavedHotkey.Format(),
+            ["hotkey.copy-scorecard-default"] = settings.CopyScorecardHotkey.Format(),
             ["font.accepts-56"] = SettingsInput.TryFontSize("56", out _),
             ["font.rejects-17"] = !SettingsInput.TryFontSize("17", out _),
             ["status-hud.enabled-default"] = settings.StatusHudEnabled,
+            ["status-hud.show-rank-default"] = settings.ShowRankOnStatusHud,
             ["status-hud.font-default"] = settings.StatusFontSizePixels,
             ["status-hud.party-alert-text"] = statusParty.Text,
             ["status-hud.off-text"] = statusOff.Text,

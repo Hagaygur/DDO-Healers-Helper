@@ -95,7 +95,8 @@ internal sealed record WatchedMemberSnapshot(
     int MaxHitPoints,
     int PartySlotIndex,
     bool Connected,
-    bool IsDeadOrDown)
+    bool IsDeadOrDown,
+    bool IsTrulyDead = false)
 {
     public double Percent => MaxHitPoints > 0
         ? Math.Clamp(HitPoints * 100.0 / MaxHitPoints, -999, 100)
@@ -130,6 +131,8 @@ internal interface IHealerEngineView
     WatchedMemberSnapshot[] GetMembers();
     void TogglePluginEnabled();
     void ResetPeopleSaved();
+    string GetChatScorecard();
+    bool CopyChatScorecard();
     bool FocusCurrentTarget();
     void CycleMode();
     bool TargetCriticalNow();

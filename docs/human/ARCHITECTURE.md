@@ -10,7 +10,8 @@ All plugin C# source files live under `src/`.
 | `Contracts.cs` | `TrackingMode`, `TargetMethod`, `BannerSeverity`, `HotkeyBinding`, `WatchedMemberSnapshot`, `AlertBannerView`, `IHealerEngineView` |
 | `HealerEngine.cs` | 120 ms scan loop, self+party+entity HP merging, self-cast (`OnHotbarUsage`/`OnRunScript`/`SpellPoints_Current`) & `PeopleSaved` persistence, foreground `GetAsyncKeyState` + `EventProvider.KeyDown`, `Volatile` view snapshot |
 | `HealerState.cs` | Pure threshold + recovery hysteresis, lowest-HP % prioritization, `DeadAlertSeconds` timeout/suppression, `Notice` overlay, strict `PluginEnabled=false` silence |
-| `PeopleSavedTracker.cs` | Pure clutch-save detector (`SelfCastWindowSeconds=3.5`, `SaveWindowSeconds=5.0`, `MinHealDelta=5`, `damageTaken > PreHealHp`, `InTown()` guard) |
+| `PeopleSavedTracker.cs` | Pure clutch-save detector (configurable `SelfCastWindowSeconds`, `SaveWindowSeconds`, `MinHealDelta`, `damageTaken > PreHealHp`, MaxHP cap & `InTown()` guards) |
+| `HealerStats.cs` | Pure gamification helpers (`StreakTracker` on `LifeState.Dead`, `ReflexTracker` `50..10000ms`, `ClosestCall`/`OnePercentClub`, `RankForSaves`, pure ASCII `<= 185` `FormatChatScorecard`) |
 | `TargetSelector.cs` | `SelectObject(ulong)` with `0 < id < ulong.MaxValue` and `GetSelectedObjectId().GetValueOrDefault()` guards, cooldown, and `IKeymap` + `SendKey` fallback |
 | `HotkeyMatcher.cs` | Pure hotkey matching and deduplication across `EventProvider.KeyDown` and `GetAsyncKeyState` |
 | `Settings.cs` | Validation, clamping, atomic `.tmp` JSON persistence (`healers-helper.json`), exact integer banner (`18..140`) & status (`9..48`) pixel font sizing |

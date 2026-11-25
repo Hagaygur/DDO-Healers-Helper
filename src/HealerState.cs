@@ -12,6 +12,7 @@ internal sealed class HealerState
     private sealed record DeadTrack(double FirstDownAt, bool Suppressed);
 
     private readonly HashSet<ulong> _lowHpActive = new();
+    private readonly Dictionary<ulong, double> _lowHpFirstAt = new();
     private readonly Dictionary<ulong, DeadTrack> _deadTracks = new();
 
     private long _alertGeneration;
@@ -26,6 +27,7 @@ internal sealed class HealerState
     public void Reset()
     {
         _lowHpActive.Clear();
+        _lowHpFirstAt.Clear();
         _deadTracks.Clear();
         _wasAlerting = false;
         _lastAlertPlayerId = null;
@@ -47,7 +49,8 @@ internal sealed class HealerState
         Settings settings,
         double now,
         string statusLine = "",
-        string targetingStatus = "")
+        string targetingStatus = "",
+        bool inTown = false)
     {
         members ??= Array.Empty<WatchedMemberSnapshot>();
         int peopleSaved = Math.Max(0, settings.PeopleSaved);
@@ -55,6 +58,7 @@ internal sealed class HealerState
         if (!settings.PluginEnabled)
         {
             _lowHpActive.Clear();
+            _lowHpFirstAt.Clear();
             _deadTracks.Clear();
             ClearAlertEpisode();
             _noticePrimary = "";
@@ -80,10 +84,21 @@ internal sealed class HealerState
         if (settings.Mode == TrackingMode.Off)
         {
             _lowHpActive.Clear();
+            _lowHpFirstAt.Clear();
             _deadTracks.Clear();
             ClearAlertEpisode();
             string offStatus = string.IsNullOrWhiteSpace(statusLine) ? "Tracking Off" : statusLine;
             return BuildIdleOrNoticeView(settings.Mode, now, offStatus, targetingStatus, true, peopleSaved);
+        }
+
+        if (settings.SuppressAlertsInTown && inTown)
+        {
+            _lowHpActive.Clear();
+            _lowHpFirstAt.Clear();
+            _deadTracks.Clear();
+            ClearAlertEpisode();
+            string townStatus = string.IsNullOrWhiteSpace(statusLine) ? "In Town (alerts paused)" : statusLine;
+            return BuildIdleOrNoticeView(settings.Mode, now, townStatus, targetingStatus, true, peopleSaved);
         }
 
         List<WatchedMemberSnapshot> watched = FilterWatched(members, settings);
@@ -100,6 +115,7 @@ internal sealed class HealerState
         }
 
         PruneMissing(_lowHpActive, watchedIds);
+        PruneMissing(_lowHpFirstAt, watchedIds);
         PruneMissing(_deadTracks, presentIds);
 
         WatchedMemberSnapshot? bestCandidate = null;
@@ -111,6 +127,7 @@ internal sealed class HealerState
             if (!member.Connected)
             {
                 _lowHpActive.Remove(member.Id);
+                _lowHpFirstAt.Remove(member.Id);
                 continue;
             }
 
@@ -118,6 +135,7 @@ internal sealed class HealerState
             if (isDown)
             {
                 _lowHpActive.Remove(member.Id);
+                _lowHpFirstAt.Remove(member.Id);
                 if (!_deadTracks.TryGetValue(member.Id, out var dead))
                 {
                     dead = new DeadTrack(now, settings.DeadAlertSeconds <= 0);
@@ -147,6 +165,7 @@ internal sealed class HealerState
             if (member.MaxHitPoints <= 0)
             {
                 _lowHpActive.Remove(member.Id);
+                _lowHpFirstAt.Remove(member.Id);
                 continue;
             }
 
@@ -157,16 +176,27 @@ internal sealed class HealerState
             if (isLow)
             {
                 _lowHpActive.Add(member.Id);
-                lowCount++;
-                if (IsHigherPriority(member, BannerSeverity.LowHp, bestCandidate, bestSeverity))
+                if (!_lowHpFirstAt.TryGetValue(member.Id, out double firstLowAt))
                 {
-                    bestCandidate = member;
-                    bestSeverity = BannerSeverity.LowHp;
+                    firstLowAt = now;
+                    _lowHpFirstAt[member.Id] = firstLowAt;
+                }
+
+                bool timedOut = settings.MaxAlertSeconds > 0 && (now - firstLowAt) >= settings.MaxAlertSeconds;
+                if (!timedOut)
+                {
+                    lowCount++;
+                    if (IsHigherPriority(member, BannerSeverity.LowHp, bestCandidate, bestSeverity))
+                    {
+                        bestCandidate = member;
+                        bestSeverity = BannerSeverity.LowHp;
+                    }
                 }
             }
             else
             {
                 _lowHpActive.Remove(member.Id);
+                _lowHpFirstAt.Remove(member.Id);
             }
         }
 
@@ -241,7 +271,9 @@ internal sealed class HealerState
             var seen = new HashSet<ulong>(members.Length);
             foreach (var m in members)
             {
-                if (m is not null && m.Id != 0 && seen.Add(m.Id)) list.Add(m);
+                if (m is null || m.Id == 0) continue;
+                if (!settings.IncludeSelfInPartyMode && m.PartySlotIndex == 0) continue;
+                if (seen.Add(m.Id)) list.Add(m);
             }
             return list;
         }

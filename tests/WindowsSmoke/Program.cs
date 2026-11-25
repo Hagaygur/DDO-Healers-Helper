@@ -65,10 +65,10 @@ internal static class Program
         if (form.Width != form.MinimumSize.Width)
             throw new Exception($"Expected initial minimum width {form.MinimumSize.Width}, got {form.Width}");
         int checkedAt380 = CheckLayoutControls(form, form);
-        if (checkedAt380 < 10)
-            throw new Exception($"Expected >= 10 visible controls checked at 380px, checked {checkedAt380}");
+        if (checkedAt380 < 11)
+            throw new Exception($"Expected >= 11 visible controls checked at 380px, checked {checkedAt380}");
 
-        // 2. Now create synthetic 720px toolbar host and verify FitToolbarWidth expansion.
+        // 2. Create synthetic 720px toolbar host and verify FitToolbarWidth expansion.
         using var host = new Form { Width = 400, Height = 400 };
         var strip = new Panel { Width = 720, Height = 45 };
         strip.Controls.Add(new PictureBox { Name = (string)pluginType.GetProperty("Name")!.GetValue(plugin)!, Left = 680, Width = 36 });
@@ -82,22 +82,27 @@ internal static class Program
         if (form.Width < strip.Width)
             throw new Exception($"Plugin form width {form.Width} < host toolbar strip width {strip.Width}");
         int checkedAt720 = CheckLayoutControls(form, form);
-        if (checkedAt720 < 10)
-            throw new Exception($"Expected >= 10 visible controls checked at 720px, checked {checkedAt720}");
+        if (checkedAt720 < 11)
+            throw new Exception($"Expected >= 11 visible controls checked at 720px, checked {checkedAt720}");
 
         var badge = (Label)form.Controls.Find("PluginStateLabel", true).Single();
         var savedLabel = (Label)form.Controls.Find("PeopleSavedLabel", true).Single();
-        if (!badge.Visible || !savedLabel.Visible || form.Controls.Find("MoveStatusButton", true).Length != 1 || form.Controls.Find("ResetSavedButton", true).Length != 1)
-            throw new Exception("Expected PluginStateLabel, PeopleSavedLabel, MoveStatusButton, and ResetSavedButton on panel");
+        var gamificationLabel = (Label)form.Controls.Find("GamificationSummaryLabel", true).Single();
+        if (!badge.Visible || !savedLabel.Visible || !gamificationLabel.Visible
+            || form.Controls.Find("MoveStatusButton", true).Length != 1
+            || form.Controls.Find("CopyScorecardButton", true).Length != 1
+            || form.Controls.Find("ResetSavedButton", true).Length != 1)
+        {
+            throw new Exception("Expected PluginStateLabel, PeopleSavedLabel, GamificationSummaryLabel, MoveStatusButton, CopyScorecardButton, and ResetSavedButton on panel");
+        }
+
+        CheckSettingsDialogGamificationAndHuds(pluginAssembly, pluginType, plugin, form);
 
         if (ui is IDisposable disposableUi)
             disposableUi.Dispose();
-        Console.WriteLine("PASS Windows plugin ZIP load, IDdoPlugin metadata, and 380px/720px toolbar UI layout");
-
-        CheckSettingsDialogAndHuds(pluginAssembly);
     }
 
-    private static void CheckSettingsDialogAndHuds(Assembly assembly)
+    private static void CheckSettingsDialogGamificationAndHuds(Assembly assembly, Type pluginType, object plugin, Form controlForm)
     {
         const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
         Type engineType = assembly.GetType("VoK.HealersHelper.HealerEngine")!;
@@ -120,6 +125,8 @@ internal static class Program
             Set("_store", store);
             Set("_state", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.HealerState")!)!);
             Set("_savedTracker", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.PeopleSavedTracker")!)!);
+            Set("_streakTracker", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.StreakTracker")!)!);
+            Set("_reflexTracker", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.ReflexTracker")!)!);
             Set("_hotkeys", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.HotkeyMatcher")!, 0.25d)!);
             Set("_selector", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.TargetSelector")!, new object?[] { null })!);
             Set("_members", Array.CreateInstance(assembly.GetType("VoK.HealersHelper.WatchedMemberSnapshot")!, 0));
@@ -144,7 +151,11 @@ internal static class Program
                 5)!;
             Set("_view", idleView);
 
-            // 1. SettingsDialog at minimum size + hotkey Escape/Backspace/duplicate validation + round-trip save
+            // Attach engine to plugin so HealerControlForm exercises live gamification summary & dynamic tooltips!
+            pluginType.GetField("_engine", fields)!.SetValue(plugin, engine);
+            Console.WriteLine("PASS Windows plugin ZIP load, IDdoPlugin metadata, and 380px/720px toolbar UI layout");
+
+            // 1. SettingsDialog at minimum size + Reset Defaults + 6-hotkey duplicate check + live-stat preservation + round-trip
             Type dialogType = assembly.GetType("VoK.HealersHelper.SettingsDialog")!;
             MethodInfo processCmdKey = dialogType.GetMethod("ProcessCmdKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
             bool SendDialogKey(Form dlg, Keys keys)
@@ -159,14 +170,27 @@ internal static class Program
                 dialog.Size = dialog.MinimumSize;
                 Application.DoEvents();
                 dialog.PerformLayout();
-                if (CheckLayoutControls(dialog, dialog) < 10)
-                    throw new Exception("SettingsDialog checked fewer than 10 visible controls");
+                if (CheckLayoutControls(dialog, dialog) < 20)
+                    throw new Exception("SettingsDialog checked fewer than 20 visible controls at MinimumSize");
 
                 var pluginEnabledBox = (CheckBox)dialog.Controls.Find("PluginEnabledCheckBox", true).Single();
+                var includeSelfBox = (CheckBox)dialog.Controls.Find("IncludeSelfCheckBox", true).Single();
+                var suppressTownBox = (CheckBox)dialog.Controls.Find("SuppressInTownCheckBox", true).Single();
+                var maxAlertNumeric = (NumericUpDown)dialog.Controls.Find("MaxAlertSecondsNumeric", true).Single();
+                var saveWinNumeric = (NumericUpDown)dialog.Controls.Find("SaveWindowSecondsNumeric", true).Single();
+                var castWinNumeric = (NumericUpDown)dialog.Controls.Find("SelfCastWindowSecondsNumeric", true).Single();
+                var minHealNumeric = (NumericUpDown)dialog.Controls.Find("MinHealDeltaNumeric", true).Single();
+                var showSavedNoticeBox = (CheckBox)dialog.Controls.Find("ShowSavedNoticeCheckBox", true).Single();
+                var showRankBox = (CheckBox)dialog.Controls.Find("ShowRankOnStatusHudCheckBox", true).Single();
+                var bannerOpacityNumeric = (NumericUpDown)dialog.Controls.Find("BannerOpacityNumeric", true).Single();
+                var flashBannerBox = (CheckBox)dialog.Controls.Find("FlashBannerCheckBox", true).Single();
                 var statusHudEnabledBox = (CheckBox)dialog.Controls.Find("StatusHudEnabledCheckBox", true).Single();
                 var statusFontBox = (TextBox)dialog.Controls.Find("StatusFontSizeTextBox", true).Single();
                 var toggleHotkeyBox = (TextBox)dialog.Controls.Find("TogglePluginHotkeyBox", true).Single();
                 var focusHotkeyBox = (TextBox)dialog.Controls.Find("FocusTargetHotkeyBox", true).Single();
+                var resetSavedHotkeyBox = (TextBox)dialog.Controls.Find("ResetSavedHotkeyBox", true).Single();
+                var copyCardHotkeyBox = (TextBox)dialog.Controls.Find("CopyScorecardHotkeyBox", true).Single();
+                var resetHotkeysBtn = (Button)dialog.Controls.Find("ResetHotkeysButton", true).Single();
                 var fontBox = (TextBox)dialog.Controls.Find("FontSizeTextBox", true).Single();
                 var deadNumeric = (NumericUpDown)dialog.Controls.Find("DeadAlertSecondsNumeric", true).Single();
                 var excludeBox = (CheckBox)dialog.Controls.Find("ExcludeFromCaptureCheckBox", true).Single();
@@ -174,32 +198,50 @@ internal static class Program
                 var statusLabel = (Label)dialog.Controls.Find("StatusLabel", true).Single();
                 var saveBtn = (Button)dialog.Controls.Find("SaveButton", true).Single();
 
-                if (toggleHotkeyBox.Text != "Ctrl+Shift+K")
-                    throw new Exception($"Unexpected default TogglePluginHotkey text: {toggleHotkeyBox.Text}");
+                if (toggleHotkeyBox.Text != "Ctrl+Shift+K" || copyCardHotkeyBox.Text != "None")
+                    throw new Exception($"Unexpected default hotkey texts: {toggleHotkeyBox.Text} / {copyCardHotkeyBox.Text}");
 
-                // Escape inside hotkey box must cancel recording WITHOUT closing SettingsDialog.
+                // Escape inside hotkey box cancels recording without closing SettingsDialog.
                 dialog.ActiveControl = focusHotkeyBox;
                 Application.DoEvents();
                 if (!SendDialogKey(dialog, Keys.Escape) || !dialog.Visible || focusHotkeyBox.Text != "Ctrl+Shift+H")
                     throw new Exception("Escape in hotkey recorder closed dialog or failed to restore binding");
 
-                // Unmodified Backspace clears hotkey to None.
+                // Unmodified Backspace clears hotkey to None, and Reset Defaults restores all 4 defaults + clears 2 optional hotkeys.
                 dialog.ActiveControl = focusHotkeyBox;
                 if (!SendDialogKey(dialog, Keys.Back) || focusHotkeyBox.Text != "None")
                     throw new Exception($"Unmodified Backspace must clear hotkey to None, got '{focusHotkeyBox.Text}'");
+                dialog.ActiveControl = copyCardHotkeyBox;
+                SendDialogKey(dialog, Keys.F9 | Keys.Control);
+                resetHotkeysBtn.PerformClick();
+                if (focusHotkeyBox.Text != "Ctrl+Shift+H" || copyCardHotkeyBox.Text != "None" || resetSavedHotkeyBox.Text != "None")
+                    throw new Exception("Reset Defaults button did not restore default chords and clear optional hotkeys");
 
-                // Duplicate hotkey (Ctrl+Shift+K == TogglePluginHotkey) must block Save.
-                if (!SendDialogKey(dialog, Keys.K | Keys.Control | Keys.Shift) || focusHotkeyBox.Text != "Ctrl+Shift+K")
-                    throw new Exception("Failed to record Ctrl+Shift+K into FocusTargetHotkeyBox");
+                // Duplicate hotkey on optional CopyScorecardHotkeyBox (Ctrl+Shift+K == TogglePluginHotkey) must block Save.
+                dialog.ActiveControl = copyCardHotkeyBox;
+                if (!SendDialogKey(dialog, Keys.K | Keys.Control | Keys.Shift) || copyCardHotkeyBox.Text != "Ctrl+Shift+K")
+                    throw new Exception("Failed to record Ctrl+Shift+K into CopyScorecardHotkeyBox");
                 saveBtn.PerformClick();
                 if (!dialog.Visible || !statusLabel.Text.Contains("Duplicate hotkey", StringComparison.Ordinal))
-                    throw new Exception("Duplicate hotkey was not rejected by SettingsDialog");
+                    throw new Exception("Duplicate hotkey on optional CopyScorecardHotkeyBox was not rejected");
 
-                // Restore distinct Ctrl+Shift+H and save valid settings.
-                dialog.ActiveControl = focusHotkeyBox;
-                SendDialogKey(dialog, Keys.H | Keys.Control | Keys.Shift);
+                // Assign distinct custom CopyScorecardHotkey (Ctrl+Shift+C) and ResetSavedHotkey (Ctrl+Shift+R) and configure extended settings.
+                dialog.ActiveControl = copyCardHotkeyBox;
+                SendDialogKey(dialog, Keys.C | Keys.Control | Keys.Shift);
+                dialog.ActiveControl = resetSavedHotkeyBox;
+                SendDialogKey(dialog, Keys.R | Keys.Control | Keys.Shift);
 
                 pluginEnabledBox.Checked = true;
+                includeSelfBox.Checked = false;
+                suppressTownBox.Checked = true;
+                maxAlertNumeric.Value = 15;
+                saveWinNumeric.Value = 7.5m;
+                castWinNumeric.Value = 4.5m;
+                minHealNumeric.Value = 12;
+                showSavedNoticeBox.Checked = false;
+                showRankBox.Checked = true;
+                bannerOpacityNumeric.Value = 200;
+                flashBannerBox.Checked = false;
                 statusHudEnabledBox.Checked = true;
                 statusFontBox.Text = "16";
                 fontBox.Text = "68";
@@ -207,26 +249,68 @@ internal static class Program
                 excludeBox.Checked = false;
                 cooldownNumeric.Value = 4.5m;
 
-                // Simulate a live PeopleSaved increment while the dialog is open.
-                settingsType.GetProperty("PeopleSaved")!.SetValue(settings, 8);
+                // Simulate live gamification increments while SettingsDialog is open!
+                settingsType.GetProperty("PeopleSaved")!.SetValue(settings, 18);
+                settingsType.GetProperty("CurrentSaveStreak")!.SetValue(settings, 6);
+                settingsType.GetProperty("BestSaveStreak")!.SetValue(settings, 11);
+                settingsType.GetProperty("ClosestCallPlayerName")!.SetValue(settings, "Tanky");
+                settingsType.GetProperty("ClosestCallPreHealHp")!.SetValue(settings, 4);
+                settingsType.GetProperty("ClosestCallPreHealPercent")!.SetValue(settings, 2.0);
+                settingsType.GetProperty("BiggestOverkillSaved")!.SetValue(settings, 350);
+                settingsType.GetProperty("OnePercentClubSaves")!.SetValue(settings, 3);
+                settingsType.GetProperty("BestReflexMs")!.SetValue(settings, 175);
+                settingsType.GetProperty("AvgReflexMs")!.SetValue(settings, 240);
+                settingsType.GetProperty("ReflexSampleCount")!.SetValue(settings, 4);
+
                 saveBtn.PerformClick();
             }
 
             using (var saved = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, "healers-helper.json"))))
             {
                 var root = saved.RootElement;
-                if (root.GetProperty("FontSizePixels").GetInt32() != 68 ||
-                    root.GetProperty("StatusFontSizePixels").GetInt32() != 16 ||
-                    root.GetProperty("DeadAlertSeconds").GetInt32() != 11 ||
-                    root.GetProperty("ExcludeFromCapture").GetBoolean() != false ||
-                    root.GetProperty("PeopleSaved").GetInt32() != 8 ||
-                    Math.Abs(root.GetProperty("AutoTargetCooldownSeconds").GetDouble() - 4.5) > 0.001)
+                if (root.GetProperty("FontSizePixels").GetInt32() != 68
+                    || root.GetProperty("StatusFontSizePixels").GetInt32() != 16
+                    || root.GetProperty("BannerOpacity").GetInt32() != 200
+                    || root.GetProperty("FlashBanner").GetBoolean() != false
+                    || root.GetProperty("IncludeSelfInPartyMode").GetBoolean() != false
+                    || root.GetProperty("SuppressAlertsInTown").GetBoolean() != true
+                    || root.GetProperty("MaxAlertSeconds").GetInt32() != 15
+                    || Math.Abs(root.GetProperty("SaveWindowSeconds").GetDouble() - 7.5) > 0.001
+                    || Math.Abs(root.GetProperty("SelfCastWindowSeconds").GetDouble() - 4.5) > 0.001
+                    || root.GetProperty("MinHealDelta").GetInt32() != 12
+                    || root.GetProperty("ShowSavedNotice").GetBoolean() != false
+                    || root.GetProperty("DeadAlertSeconds").GetInt32() != 11
+                    || root.GetProperty("ExcludeFromCapture").GetBoolean() != false
+                    || root.GetProperty("PeopleSaved").GetInt32() != 18
+                    || root.GetProperty("CurrentSaveStreak").GetInt32() != 6
+                    || root.GetProperty("BestSaveStreak").GetInt32() != 11
+                    || root.GetProperty("ClosestCallPlayerName").GetString() != "Tanky"
+                    || root.GetProperty("OnePercentClubSaves").GetInt32() != 3
+                    || root.GetProperty("BestReflexMs").GetInt32() != 175
+                    || Math.Abs(root.GetProperty("AutoTargetCooldownSeconds").GetDouble() - 4.5) > 0.001)
                 {
-                    throw new Exception("SettingsDialog save did not round-trip exact values and preserve live PeopleSaved");
+                    throw new Exception("SettingsDialog save did not round-trip extended settings and preserve all live gamification stats");
                 }
             }
 
-            // Verify TogglePluginEnabled() and ResetPeopleSaved() on engine
+            // Refresh HealerControlForm and verify dynamic hotkey tooltips reflect Ctrl+Shift+C / Ctrl+Shift+R!
+            controlForm.GetType().GetMethod("RefreshState", fields)!.Invoke(controlForm, null);
+            var toolTip = (ToolTip)controlForm.GetType().GetProperty("ButtonToolTip", fields)!.GetValue(controlForm)!;
+            var copyBtn = (Button)controlForm.Controls.Find("CopyScorecardButton", true).Single();
+            var resetBtn = (Button)controlForm.Controls.Find("ResetSavedButton", true).Single();
+            if (!(toolTip.GetToolTip(copyBtn) ?? string.Empty).Contains("Ctrl+Shift+C", StringComparison.Ordinal)
+                || !(toolTip.GetToolTip(resetBtn) ?? string.Empty).Contains("Ctrl+Shift+R", StringComparison.Ordinal))
+            {
+                throw new Exception("HealerControlForm tooltips did not dynamically reflect saved custom hotkeys");
+            }
+
+            // Verify GetChatScorecard() and CopyChatScorecard() produce pure printable ASCII <= 185 chars
+            string card = (string)engineType.GetMethod("GetChatScorecard")!.Invoke(engine, null)!;
+            if (card.Length is < 1 or > 185 || card.Any(c => c is < (char)0x20 or > (char)0x7E) || !card.Contains("Lifeweaver", StringComparison.Ordinal))
+                throw new Exception($"Unexpected GetChatScorecard output ({card.Length}): {card}");
+            _ = engineType.GetMethod("CopyChatScorecard")!.Invoke(engine, null);
+
+            // Verify TogglePluginEnabled() and ResetPeopleSaved() zeroing all gamification stats
             engineType.GetMethod("TogglePluginEnabled")!.Invoke(engine, null);
             var toggledView = engineType.GetMethod("View")!.Invoke(engine, null)!;
             if ((bool)viewType.GetProperty("PluginEnabled")!.GetValue(toggledView)!)
@@ -234,11 +318,18 @@ internal static class Program
 
             engineType.GetMethod("TogglePluginEnabled")!.Invoke(engine, null);
             engineType.GetMethod("ResetPeopleSaved")!.Invoke(engine, null);
-            var resetView = engineType.GetMethod("View")!.Invoke(engine, null)!;
-            if ((int)viewType.GetProperty("PeopleSaved")!.GetValue(resetView)! != 0)
-                throw new Exception("ResetPeopleSaved did not reset PeopleSaved to 0");
+            var resetSettings = engineType.GetMethod("GetSettings")!.Invoke(engine, null)!;
+            if ((int)settingsType.GetProperty("PeopleSaved")!.GetValue(resetSettings)! != 0
+                || (int)settingsType.GetProperty("CurrentSaveStreak")!.GetValue(resetSettings)! != 0
+                || (int)settingsType.GetProperty("BestSaveStreak")!.GetValue(resetSettings)! != 0
+                || (int)settingsType.GetProperty("OnePercentClubSaves")!.GetValue(resetSettings)! != 0
+                || (int)settingsType.GetProperty("BestReflexMs")!.GetValue(resetSettings)! != 0
+                || !string.IsNullOrEmpty((string)settingsType.GetProperty("ClosestCallPlayerName")!.GetValue(resetSettings)!))
+            {
+                throw new Exception("ResetPeopleSaved did not zero all persisted gamification stats");
+            }
 
-            Console.WriteLine("PASS SettingsDialog minimum-size layout, Escape/Backspace/duplicate hotkeys, JSON round-trip, TogglePluginEnabled, and ResetPeopleSaved");
+            Console.WriteLine("PASS SettingsDialog 5-group layout, Reset Defaults, 6-hotkey validation, gamification preservation, dynamic tooltips, and ASCII scorecard");
 
             // 2. BannerHudWindow layered native surface, styles, flash phases, and disposal
             const long requiredEx = WsExTransparent | WsExToolWindow | WsExLayered | WsExNoActivate;
@@ -332,7 +423,7 @@ internal static class Program
                 object partyStatusFrame = Activator.CreateInstance(
                     statusFrameType,
                     true,
-                    "HEALER  PARTY <=50%  •  SAVED 3",
+                    "HEALER  PARTY <=50%  •  SAVED 3 (Field Medic)",
                     14,
                     unchecked((int)0xFF7AE582),
                     false,
@@ -372,6 +463,7 @@ internal static class Program
         }
         finally
         {
+            pluginType.GetField("_engine", fields)!.SetValue(plugin, null);
             if (Directory.Exists(folder))
                 Directory.Delete(folder, true);
         }

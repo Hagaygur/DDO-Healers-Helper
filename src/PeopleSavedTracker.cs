@@ -14,7 +14,7 @@ internal sealed class PeopleSavedTracker
     public const int MinHealDelta = 5;
 
     private readonly record struct PrevHpState(int Hp, int MaxHp);
-    private sealed record HealWindow(int PreHealHp, long CumulativeDamage, double ExpiresAt);
+    private sealed record HealWindow(int PreHealHp, int PreHealMaxHp, long CumulativeDamage, double ExpiresAt);
 
     private readonly Dictionary<ulong, PrevHpState> _previous = new();
     private readonly Dictionary<ulong, HealWindow> _healWindows = new();
@@ -30,14 +30,35 @@ internal sealed class PeopleSavedTracker
         bool pluginEnabled,
         bool inTown,
         double now,
-        double lastSelfCastAt)
+        double lastSelfCastAt) =>
+        ProcessScanDetailed(members, pluginEnabled, inTown, now, lastSelfCastAt)
+            .Select(e => e.PlayerName)
+            .ToList();
+
+    public List<ClutchSaveEvent> ProcessScanDetailed(
+        WatchedMemberSnapshot[] members,
+        bool pluginEnabled,
+        bool inTown,
+        double now,
+        double lastSelfCastAt,
+        double saveWindowSeconds = SaveWindowSeconds,
+        int minHealDelta = MinHealDelta,
+        double selfCastWindowSeconds = SelfCastWindowSeconds)
     {
-        var savedNames = new List<string>();
+        var savedEvents = new List<ClutchSaveEvent>();
         if (!pluginEnabled)
         {
             Reset();
-            return savedNames;
+            return savedEvents;
         }
+
+        double effectiveSaveWindow = double.IsFinite(saveWindowSeconds)
+            ? Math.Clamp(saveWindowSeconds, 1.0, 15.0)
+            : SaveWindowSeconds;
+        double effectiveCastWindow = double.IsFinite(selfCastWindowSeconds)
+            ? Math.Clamp(selfCastWindowSeconds, 1.0, 15.0)
+            : SelfCastWindowSeconds;
+        int effectiveMinDelta = Math.Clamp(minHealDelta, 1, 200);
 
         members ??= Array.Empty<WatchedMemberSnapshot>();
         var connectedIds = new HashSet<ulong>(members.Length);
@@ -52,7 +73,7 @@ internal sealed class PeopleSavedTracker
         PruneMissing(_previous, connectedIds);
         PruneMissing(_healWindows, connectedIds);
 
-        bool selfCastRecent = double.IsFinite(lastSelfCastAt) && (now - lastSelfCastAt) <= SelfCastWindowSeconds;
+        bool selfCastRecent = double.IsFinite(lastSelfCastAt) && (now - lastSelfCastAt) <= effectiveCastWindow;
 
         foreach (var member in members)
         {
@@ -90,21 +111,34 @@ internal sealed class PeopleSavedTracker
 
                 if (prev.Hp > 0
                     && (prev.MaxHp <= 0 || prev.Hp < prev.MaxHp)
-                    && effectiveHeal >= MinHealDelta
+                    && effectiveHeal >= effectiveMinDelta
                     && selfCastRecent)
                 {
                     int preHealHp;
+                    int preHealMaxHp;
+                    int currentMaxRef = prev.MaxHp > 0 ? prev.MaxHp : member.MaxHitPoints;
+
                     if (_healWindows.TryGetValue(member.Id, out var existing) && now <= existing.ExpiresAt)
                     {
                         int effectiveFloor = (int)Math.Max(1L, existing.PreHealHp - existing.CumulativeDamage);
-                        preHealHp = Math.Min(effectiveFloor, prev.Hp);
+                        if (prev.Hp <= effectiveFloor)
+                        {
+                            preHealHp = prev.Hp;
+                            preHealMaxHp = currentMaxRef;
+                        }
+                        else
+                        {
+                            preHealHp = effectiveFloor;
+                            preHealMaxHp = existing.PreHealMaxHp > 0 ? existing.PreHealMaxHp : currentMaxRef;
+                        }
                     }
                     else
                     {
                         preHealHp = prev.Hp;
+                        preHealMaxHp = currentMaxRef;
                     }
 
-                    _healWindows[member.Id] = new HealWindow(preHealHp, 0L, now + SaveWindowSeconds);
+                    _healWindows[member.Id] = new HealWindow(preHealHp, preHealMaxHp, 0L, now + effectiveSaveWindow);
                 }
                 else if (!selfCastRecent
                          && effectiveHeal > 0
@@ -135,7 +169,17 @@ internal sealed class PeopleSavedTracker
                         long totalDamage = window.CumulativeDamage + effectiveDamage;
                         if (totalDamage > window.PreHealHp)
                         {
-                            savedNames.Add(member.Name);
+                            double preHealPct = window.PreHealMaxHp > 0
+                                ? Math.Clamp(window.PreHealHp * 100.0 / window.PreHealMaxHp, 0.0, 100.0)
+                                : 100.0;
+                            int overkill = (int)Math.Min(int.MaxValue, totalDamage - window.PreHealHp);
+                            savedEvents.Add(new ClutchSaveEvent(
+                                member.Id,
+                                member.Name,
+                                window.PreHealHp,
+                                window.PreHealMaxHp,
+                                preHealPct,
+                                overkill));
                             _healWindows.Remove(member.Id);
                         }
                         else
@@ -149,7 +193,7 @@ internal sealed class PeopleSavedTracker
             _previous[member.Id] = new PrevHpState(member.HitPoints, member.MaxHitPoints);
         }
 
-        return savedNames;
+        return savedEvents;
     }
 
     private static void PruneMissing<TValue>(Dictionary<ulong, TValue> dict, HashSet<ulong> keep)

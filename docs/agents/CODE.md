@@ -8,7 +8,7 @@ Human counterpart: [Architecture](../human/ARCHITECTURE.md). All paths below are
 | Shared types & contracts | `src/Contracts.cs` | `TrackingMode`, `TargetMethod`, `BannerSeverity`, `HotkeyBinding`, `WatchedMemberSnapshot`, `AlertBannerView`, `IHealerEngineView` |
 | HP scan & engine loop | `src/HealerEngine.cs` | Merge self (`GetCurrentCharacterId`/`GetCurrentCharacter`) + `GetPartyMembers()` + `GetEntity(id)` enrichment; short callbacks; lock discipline |
 | Alert state & hysteresis | `src/HealerState.cs` | Pure portable C#; monotonic timestamps; threshold + hysteresis; `DeadAlertSeconds` suppression until HP > 0 & alive; `Notice` overlay; strict `PluginEnabled=false` silence |
-| People Saved tracker | `src/PeopleSavedTracker.cs`, `src/HealerEngine.cs` | Pure portable C#; `SelfCastWindowSeconds=3.5`, `SaveWindowSeconds=5.0`, `MinHealDelta=5`, `damageTaken > PreHealHp`, `InTown()` guard, stale-dialog guard |
+| People Saved & gamification | `src/PeopleSavedTracker.cs`, `src/HealerStats.cs`, `src/HealerEngine.cs` | Pure portable C#; configurable `SelfCastWindowSeconds`/`SaveWindowSeconds`/`MinHealDelta`, `damageTaken > PreHealHp`, true-death streak reset (`LifeState.Dead` only), `[50..10000ms]` reflex timer, pure ASCII `<= 185` chat scorecard, `CopyLiveStatsFrom` stale-dialog guard |
 | Targeting | `src/TargetSelector.cs` | Guard `id > 0 && id < ulong.MaxValue`, `!IsDeleted`, `GetSelectedObjectId().GetValueOrDefault() != id`, cooldown; never invent unbound keys |
 | Hotkeys | `src/HotkeyMatcher.cs`, `src/HealerEngine.cs` | Pure portable matcher + dedup (~250ms); `EventProvider.KeyDown` + foreground-gated `GetAsyncKeyState` poll; `TogglePluginHotkey` stays active when disabled |
 | Settings | `src/Settings.cs`, `src/SettingsDialog.cs` | Atomic `.tmp` write; exact integer `FontSizePixels` (`18..140`) & `StatusFontSizePixels` (`9..48`); clamped ranges; `healers-helper.json` |
@@ -18,7 +18,7 @@ Human counterpart: [Architecture](../human/ARCHITECTURE.md). All paths below are
 
 ## Key invariants
 
-- **Portable vs Windows split:** `Contracts.cs`, `Settings.cs`, `HotkeyMatcher.cs`, `PeopleSavedTracker.cs`, `HealerState.cs`, `BannerPresentation.cs`, and `StatusHudPresentation.cs` must remain 100% portable C# (no WinForms or Win32 P/Invoke) so `tests/HealersHelper.Tests.csproj` compiles and runs on both Windows and Linux.
+- **Portable vs Windows split:** `Contracts.cs`, `Settings.cs`, `HotkeyMatcher.cs`, `HealerStats.cs`, `PeopleSavedTracker.cs`, `HealerState.cs`, `BannerPresentation.cs`, and `StatusHudPresentation.cs` must remain 100% portable C# (no WinForms or Win32 P/Invoke) so `tests/HealersHelper.Tests.csproj` compiles and runs on both Windows and Linux.
 - **Party + Self merging:** `GetPartyMembers()` omits the local player. `HealerEngine` assigns self `PartySlotIndex = 0` and party members `1..N`, enriching with `GetEntity(id)` for `LifeState` (`Dead=2`, `Incapacitated=3`, `Alive=4`) and live `HitPoints_Current` / `HitPoints_Max`.
 - **`GetSelectedObjectId()` quirk:** Returns `(ulong?)0` when nothing is selected; use `.GetValueOrDefault()` and reject `0` and `ulong.MaxValue`.
 - **HUD thread safety:** Engine publishes immutable `AlertBannerView` snapshots via `Volatile`. `BannerHudWindow` renders on its dedicated STA thread and disposes its `CreateDIBSection` / `HDC` handles cleanly on teardown without blocking DH's UI thread.

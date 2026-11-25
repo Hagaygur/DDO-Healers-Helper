@@ -13,7 +13,8 @@ In the **DDO Healer's Helper** control panel:
 - **Cycle Mode (`Ctrl+Shift+J`):** Toggles between `Party` and `SinglePlayer` when enabled.
 - **Target Critical (`Ctrl+Shift+T`):** Immediately selects the lowest/down watched player via `SelectObject(ulong)` (or `PartyKeyOnly` keybind if configured).
 - **Preview Banner / Move Banner / Move Status (20s):** Previews the flashing center banner and lets you drag either the center banner (`HudX`, `HudY`) or the compact status HUD (`StatusHudX`, `StatusHudY`). Close the DH panel during play; both HUD windows remain active.
-- **Reset Saved:** Resets the persistent `People Saved` counter back to `0`.
+- **Copy Chat Card:** Copies a single-line pure ASCII (`<= 185` chars) healer scorecard (rank, saves, streak, 1% club, closest call, reflex) to the clipboard for pasting into `/p` or `/raid`.
+- **Reset Saved:** Resets `People Saved` and all persisted gamification stats (streaks, closest call, 1% club, overkill, reflex) back to `0`.
 
 ## Development and release
 

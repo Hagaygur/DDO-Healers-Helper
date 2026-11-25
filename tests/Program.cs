@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using VoK.HealersHelper;
 
 internal static class Program
@@ -19,7 +20,9 @@ internal static class Program
         TestRecoveryHysteresis();
         TestDeadAndIncapacitatedTimeoutAndSuppression();
         TestSinglePlayerAndSoloAndOffAndMasterToggle();
+        TestExtendedAlertConfigurability();
         TestPeopleSavedTracker();
+        TestGamificationStreakClosestCallReflexRanksAndScorecard();
         TestHotkeyMatcherAndDeduplication();
         TestTargetPolicyRules();
         TestSettingsValidationPersistenceAndFonts();
@@ -58,7 +61,6 @@ internal static class Program
         Assert(lowView.PrimaryText == "HEAL Bob (20%)", "exact primary percent formatting");
         Assert(lowView.SecondaryText == "40/200 HP • 2 low", "secondary text includes HP ratio and low count");
 
-        // Same alert player & severity on next tick preserves AlertGeneration; target change increments it.
         Assert(state.Evaluate(twoLow, settings, 2.2).AlertGeneration == gen1, "AlertGeneration unchanged across ticks of same alert");
         var switchedLow = new[]
         {
@@ -69,7 +71,6 @@ internal static class Program
         long gen2 = state.Evaluate(switchedLow, settings, 2.4).AlertGeneration;
         Assert(gen2 == gen1 + 1, "AlertGeneration increments when prioritized low player changes");
 
-        // Equal-HP% tie-breaking: PartySlotIndex 0 (Self) beats slot 1, then lower Id wins.
         var tieSelfVsParty = new[]
         {
             new WatchedMemberSnapshot(10, "Alice", 60, 200, 1, true, false),
@@ -84,7 +85,6 @@ internal static class Program
         };
         Assert(state.Evaluate(tieSameSlot, settings, 2.8).AlertPlayerId == 12, "equal HP% and slot tie breaks by lower Id");
 
-        // Null entry and duplicate ID resilience in Evaluate.
         var withNullAndDup = new WatchedMemberSnapshot[]
         {
             null!,
@@ -94,7 +94,6 @@ internal static class Program
         var dedupView = state.Evaluate(withNullAndDup, settings, 2.9);
         Assert(dedupView.LowMemberCount == 1 && dedupView.AlertPlayerId == 2, "Evaluate ignores null entries and deduplicates member IDs");
 
-        // Disconnected member is ignored even with low HP.
         var offline = new[]
         {
             new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false),
@@ -147,7 +146,6 @@ internal static class Program
         var tankDownAgain = new[] { new WatchedMemberSnapshot(2, "Tank", -3, 200, 1, true, true) };
         Assert(state.Evaluate(tankDownAgain, settings, 122.0).Severity == BannerSeverity.CriticalDown, "member dying again after raise alerts again");
 
-        // MaxHitPoints == 0 with IsDeadOrDown == true formats fallback secondary detail.
         var noMaxDown = new[] { new WatchedMemberSnapshot(9, "Ghost", 0, 0, 1, true, true) };
         var noMaxView = new HealerState().Evaluate(noMaxDown, settings, 10.0);
         Assert(noMaxView.Severity == BannerSeverity.CriticalDown && noMaxView.SecondaryText.Contains("Incapacitated / Dead"),
@@ -185,14 +183,12 @@ internal static class Program
         Assert(offView.Severity == BannerSeverity.None && offView.StatusLine == "Tracking Off", "Off mode stays silent");
 
         state.SetNotice("MODE: PARTY", "Watching self and party/raid", 2.0, 5.0);
-        // Active LowHp alert always overrides an active Notice.
         Assert(state.Evaluate(solo, partyMode, 5.2).Severity == BannerSeverity.LowHp, "active LowHp alert overrides active Notice");
         var notice = state.Evaluate(new[] { new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false) }, partyMode, 5.5);
         Assert(notice.Severity == BannerSeverity.Notice && notice.PrimaryText == "MODE: PARTY", "Notice surfaces while idle");
         var expiredNotice = state.Evaluate(new[] { new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false) }, partyMode, 7.5);
         Assert(expiredNotice.Severity == BannerSeverity.None, "Notice clears after duration expires");
 
-        // Master PluginEnabled = false silences alerts, notices, and reports PluginEnabled == false.
         state.SetNotice("SAVED Alice! (Saved: 1)", "Clutch heal", 2.0, 8.0);
         var masterOff = new Settings { PluginEnabled = false, Mode = TrackingMode.Party, PeopleSaved = 4 };
         var masterOffView = state.Evaluate(party, masterOff, 8.5);
@@ -200,45 +196,101 @@ internal static class Program
             "master PluginEnabled=false silences alerts and notices while preserving PeopleSaved count");
     }
 
+    private static void TestExtendedAlertConfigurability()
+    {
+        // 1. IncludeSelfInPartyMode = false skips slot 0 in Party while keeping party allies, yet allows focusing Self in SinglePlayer.
+        var state = new HealerState();
+        var members = new[]
+        {
+            new WatchedMemberSnapshot(1, "Self", 20, 200, 0, true, false),
+            new WatchedMemberSnapshot(2, "Ally", 80, 200, 1, true, false)
+        };
+        var excludeSelfParty = new Settings { Mode = TrackingMode.Party, IncludeSelfInPartyMode = false, HpThresholdPercent = 50 };
+        var view = state.Evaluate(members, excludeSelfParty, 10.0);
+        Assert(view.Severity == BannerSeverity.LowHp && view.AlertPlayerId == 2 && view.LowMemberCount == 1,
+            "IncludeSelfInPartyMode=false skips slot 0 Self in Party mode while alerting on low Ally");
+
+        var focusSelf = new Settings { Mode = TrackingMode.SinglePlayer, IncludeSelfInPartyMode = false, FocusedPlayerId = 1, FocusedPlayerName = "Self" };
+        Assert(state.Evaluate(members, focusSelf, 11.0).AlertPlayerId == 1,
+            "IncludeSelfInPartyMode=false still allows explicitly focusing Self in SinglePlayer mode");
+
+        // 2. SuppressAlertsInTown = true pauses LowHp/CriticalDown in town while preserving Notice.
+        var townState = new HealerState();
+        var townSettings = new Settings { Mode = TrackingMode.Party, SuppressAlertsInTown = true };
+        var critMembers = new[] { new WatchedMemberSnapshot(2, "Ally", -4, 200, 1, true, true) };
+        var inTownIdle = townState.Evaluate(critMembers, townSettings, 20.0, inTown: true);
+        Assert(inTownIdle.Severity == BannerSeverity.None && inTownIdle.StatusLine == "In Town (alerts paused)",
+            "SuppressAlertsInTown=true suppresses alerts when inTown=true");
+        townState.SetNotice("SCORECARD COPIED", "Paste into chat", 2.0, 20.5);
+        Assert(townState.Evaluate(critMembers, townSettings, 21.0, inTown: true).Severity == BannerSeverity.Notice,
+            "SuppressAlertsInTown=true still displays user Notice overlays in town");
+        Assert(townState.Evaluate(critMembers, townSettings, 25.0, inTown: false).Severity == BannerSeverity.CriticalDown,
+            "SuppressAlertsInTown=true resumes alerts immediately outside town");
+
+        // 3. MaxAlertSeconds times out persistent LowHp, surfaces next low ally, prevents re-spam below hysteresis, escalates on CriticalDown, and re-arms after recovery.
+        var maxState = new HealerState();
+        var maxSettings = new Settings { HpThresholdPercent = 50, RecoveryHysteresisPercent = 3, MaxAlertSeconds = 4, DeadAlertSeconds = 6 };
+        var aliceLow = new[] { new WatchedMemberSnapshot(2, "Alice", 40, 200, 1, true, false) };
+        Assert(maxState.Evaluate(aliceLow, maxSettings, 100.0).Severity == BannerSeverity.LowHp, "MaxAlertSeconds starts LowHp alert");
+        Assert(maxState.Evaluate(aliceLow, maxSettings, 103.9).Severity == BannerSeverity.LowHp, "MaxAlertSeconds keeps LowHp before timeout");
+
+        var twoWithBob = new[]
+        {
+            new WatchedMemberSnapshot(2, "Alice", 40, 200, 1, true, false), // timed out at 104.0
+            new WatchedMemberSnapshot(3, "Bob", 80, 200, 2, true, false)    // fresh low at 104.0
+        };
+        var surfacedBob = maxState.Evaluate(twoWithBob, maxSettings, 104.0);
+        Assert(surfacedBob.Severity == BannerSeverity.LowHp && surfacedBob.AlertPlayerId == 3 && surfacedBob.LowMemberCount == 1,
+            "MaxAlertSeconds suppresses timed-out LowHp member and surfaces next low ally");
+
+        // Fluctuating below hysteresis (52% < 53%) stays latched and suppressed without re-spamming.
+        var alice52 = new[] { new WatchedMemberSnapshot(2, "Alice", 104, 200, 1, true, false) };
+        Assert(maxState.Evaluate(alice52, maxSettings, 105.0).Severity == BannerSeverity.None,
+            "MaxAlertSeconds does not re-trigger while hovering below recovery hysteresis");
+
+        // Escalating to CriticalDown immediately alerts despite prior LowHp timeout!
+        var aliceDown = new[] { new WatchedMemberSnapshot(2, "Alice", -2, 200, 1, true, true) };
+        Assert(maxState.Evaluate(aliceDown, maxSettings, 106.0).Severity == BannerSeverity.CriticalDown,
+            "CriticalDown overrides prior MaxAlertSeconds LowHp timeout");
+
+        // Full recovery above hysteresis (>= 53%) re-arms LowHp for future drops.
+        var aliceHealthy = new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) };
+        Assert(maxState.Evaluate(aliceHealthy, maxSettings, 107.0).Severity == BannerSeverity.None, "healed above hysteresis clears MaxAlertSeconds latch");
+        Assert(maxState.Evaluate(aliceLow, maxSettings, 108.0).Severity == BannerSeverity.LowHp, "subsequent drop re-triggers fresh LowHp alert");
+    }
+
     private static void TestPeopleSavedTracker()
     {
         var tracker = new PeopleSavedTracker();
 
-        // 1. First observation records previousHp without opening a heal window.
         var s1 = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 10.0, 9.5);
         Assert(s1.Count == 0, "first observation does not count save");
 
-        // 2. Heal within 3.5s self-cast window opens 5s heal window (PreHealHp = 20); hit of 80 leaves 40 HP > 0 -> SAVE!
         var s2 = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 11.0, 9.5);
         Assert(s2.Count == 0, "heal itself does not count save before damage");
         var s3 = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 40, 200, 1, true, false) }, true, false, 15.5, 9.5);
         Assert(s3.Count == 1 && s3[0] == "Alice", "hit > PreHealHp within 5s leaving player alive counts 1 save");
 
-        // 3. Single-save consumption: second hit right after cannot re-consume same heal window.
         var s4 = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 10, 200, 1, true, false) }, true, false, 15.8, 9.5);
         Assert(s4.Count == 0, "consumed heal window cannot double-count a second hit");
 
-        // 4. Chained heal keeps lowest PreHealHp floor (10 -> 70 -> 150, then 90 damage (150 -> 60) > 10 counts save).
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 70, 200, 1, true, false) }, true, false, 20.0, 19.5);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, false, 21.0, 20.5);
         var sChain = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 60, 200, 1, true, false) }, true, false, 25.5, 20.5);
         Assert(sChain.Count == 1, "chained heals preserve lowest PreHealHp floor and extend 5s window");
 
-        // 5. Exact boundary: damageTaken == PreHealHp does not count; cumulative +1 on next tick DOES count (multi-hit across ticks)!
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 26.0, 25.8);
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 26.5, 26.2); // PreHealHp = 20
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 26.5, 26.2);
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 80, 200, 1, true, false) }, true, false, 27.0, 26.2).Count == 0,
             "damageTaken == PreHealHp (20 == 20) does not count save yet");
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 79, 200, 1, true, false) }, true, false, 27.2, 26.2).Count == 1,
             "cumulative multi-hit damage across ticks (20 + 1 > 20) counts save");
 
-        // 6. Window expires after 5.0s: damage at +5.1s does not count.
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 30.0, 29.0);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 31.0, 30.5);
         var sExpired = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 36.1, 30.5);
         Assert(sExpired.Count == 0, "expired heal window (> 5.0s) does not count save");
 
-        // 7. Player dying from the hit (HitPoints <= 0 or IsDeadOrDown with HP > 0) does NOT count and clears window.
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 40.0, 39.5);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 41.0, 40.0);
         var sDied = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", -5, 200, 1, true, true) }, true, false, 42.0, 40.0);
@@ -249,27 +301,36 @@ internal static class Program
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 10, 200, 1, true, true) }, true, false, 44.0, 43.2).Count == 0,
             "IsDeadOrDown == true even with HitPoints > 0 rejects save and clears window");
 
-        // 8. MaxHP gear/buff swap & Rage expiration do NOT trigger false heal windows or false saves!
         var gearTracker = new PeopleSavedTracker();
         gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1000, 1000, 1, true, false) }, true, false, 10.0, 9.9);
-        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 10.5, 10.4); // pure +400 MaxHP swap
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 10.5, 10.4);
         Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 300, 1400, 1, true, false) }, true, false, 11.0, 10.4).Count == 0,
             "pure MaxHP gear/buff increase does not open a clutch heal window");
 
         gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 150, 1400, 1, true, false) }, true, false, 20.0, 19.9);
-        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 20.5, 20.4); // real heal (PreHealHp = 150)
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 20.5, 20.4);
         Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1000, 1000, 1, true, false) }, true, false, 21.0, 20.4).Count == 0,
             "Rage/CON MaxHP drop (1400/1400 -> 1000/1000) does not falsely count as enemy damage save");
         Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 800, 1000, 1, true, false) }, true, false, 22.0, 20.4).Count == 1,
             "real 200 damage after Rage drop still counts against active 150 PreHealHp window");
 
-        // 9. Extreme negative HP (`int.MinValue`) does not overflow 32-bit signed math.
         var overflowTracker = new PeopleSavedTracker();
         overflowTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Tank", int.MinValue, 500, 1, true, true) }, true, false, 1.0, 0.9);
         Assert(overflowTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Tank", 250, 500, 1, true, false) }, true, false, 1.5, 1.4).Count == 0,
             "extreme int.MinValue recovery does not overflow signed int delta");
 
-        // 10. Guards: no recent self-cast (> 3.5s), tiny regen (< 5 HP), town clearing active window, and master-off.
+        // Custom SaveWindowSeconds (10s), SelfCastWindowSeconds (8s), and MinHealDelta (50) honored.
+        var customTracker = new PeopleSavedTracker();
+        customTracker.ProcessScanDetailed(new[] { new WatchedMemberSnapshot(2, "Tank", 30, 300, 1, true, false) }, true, false, 1.0, 0.5, 10.0, 50, 8.0);
+        customTracker.ProcessScanDetailed(new[] { new WatchedMemberSnapshot(2, "Tank", 60, 300, 1, true, false) }, true, false, 7.0, 0.5, 10.0, 50, 8.0); // +30 < 50 rejected
+        Assert(customTracker.ProcessScanDetailed(new[] { new WatchedMemberSnapshot(2, "Tank", 10, 300, 1, true, false) }, true, false, 8.0, 0.5, 10.0, 50, 8.0).Count == 0,
+            "custom MinHealDelta=50 rejects +30 heal");
+
+        customTracker.ProcessScanDetailed(new[] { new WatchedMemberSnapshot(2, "Tank", 250, 300, 1, true, false) }, true, false, 8.2, 0.5, 10.0, 50, 8.0); // 7.7s <= 8.0s cast window, +240 >= 50
+        var customSaved = customTracker.ProcessScanDetailed(new[] { new WatchedMemberSnapshot(2, "Tank", 50, 300, 1, true, false) }, true, false, 17.5, 0.5, 10.0, 50, 8.0); // +9.3s <= 10.0s save window
+        Assert(customSaved.Count == 1 && customSaved[0].OverkillSaved == 190,
+            "custom SelfCastWindowSeconds=8s and SaveWindowSeconds=10s honored with exact OverkillSaved");
+
         tracker.Reset();
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 50.0, 40.0);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 51.0, 40.0);
@@ -281,8 +342,8 @@ internal static class Program
             "regen < MinHealDelta (5) does not open heal window");
 
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 70.0, 69.9);
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, false, 70.5, 70.4); // open window
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, true, 71.0, 70.4);  // entered town -> clears window
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, false, 70.5, 70.4);
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, true, 71.0, 70.4);
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 72.0, 70.4).Count == 0,
             "entering town clears active heal window");
 
@@ -293,13 +354,143 @@ internal static class Program
             "turning plugin OFF clears active PeopleSaved heal windows");
     }
 
+    private static void TestGamificationStreakClosestCallReflexRanksAndScorecard()
+    {
+        // 1. Streak & True Death vs Incapacitated vs Corpse Bubble vs Town
+        var stats = new Settings();
+        var streak = new StreakTracker();
+
+        HealerStats.ApplyClutchSave(stats, new ClutchSaveEvent(2, "Tank", 11, 200, 5.5, 80));
+        HealerStats.ApplyClutchSave(stats, new ClutchSaveEvent(3, "Rogue", 10, 200, 5.0, 140));
+        Assert(stats.PeopleSaved == 2 && stats.CurrentSaveStreak == 2 && stats.BestSaveStreak == 2,
+            "saves increment PeopleSaved, CurrentSaveStreak, and BestSaveStreak");
+        Assert(stats.OnePercentClubSaves == 1 && stats.BiggestOverkillSaved == 140,
+            "5.0% boundary counts for 1% Club while 5.5% does not, and BiggestOverkillSaved updates");
+        Assert(stats.ClosestCallPlayerName == "Rogue" && stats.ClosestCallPreHealHp == 10 && Math.Abs(stats.ClosestCallPreHealPercent - 5.0) < 0.01,
+            "ClosestCall selects lower PreHealPercent (5.0% < 5.5%)");
+
+        // Equal percent tie-break by lower PreHealHp (5/100 = 5.0% vs 10/200 = 5.0%).
+        HealerStats.ApplyClutchSave(stats, new ClutchSaveEvent(4, "Wizard", 5, 100, 5.0, 90));
+        Assert(stats.ClosestCallPlayerName == "Wizard" && stats.ClosestCallPreHealHp == 5 && stats.OnePercentClubSaves == 2,
+            "ClosestCall breaks equal PreHealPercent tie by lower PreHealHp");
+
+        // Incapacitated (-5 HP, IsDeadOrDown = true, IsTrulyDead = false) does NOT reset streak!
+        var incapParty = new[] { new WatchedMemberSnapshot(2, "Tank", -5, 200, 1, true, IsDeadOrDown: true, IsTrulyDead: false) };
+        Assert(!streak.ProcessWatched(incapParty, incapParty, true, false, stats) && stats.CurrentSaveStreak == 3,
+            "healable LifeState.Incapacitated (-5 HP) never resets CurrentSaveStreak");
+
+        // True death (LifeState.Dead -> IsTrulyDead = true) resets CurrentSaveStreak to 0 while keeping BestSaveStreak == 3.
+        var deadParty = new[] { new WatchedMemberSnapshot(2, "Tank", -15, 200, 1, true, IsDeadOrDown: true, IsTrulyDead: true) };
+        Assert(streak.ProcessWatched(deadParty, deadParty, true, false, stats) && stats.CurrentSaveStreak == 0 && stats.BestSaveStreak == 3,
+            "IsTrulyDead resets CurrentSaveStreak to 0 while preserving BestSaveStreak");
+
+        // Subsequent save brings streak to 1; corpse staying dead (and leaving/re-entering entity bubble at <= 0 HP) does NOT re-reset!
+        HealerStats.ApplyClutchSave(stats, new ClutchSaveEvent(3, "Rogue", 2, 200, 1.0, 200));
+        Assert(stats.CurrentSaveStreak == 1 && stats.OnePercentClubSaves == 3 && stats.ClosestCallPlayerName == "Rogue", "1.0% save updates streak and ClosestCall");
+
+        var corpseOutBubble = new[] { new WatchedMemberSnapshot(2, "Tank", -15, 200, 1, true, IsDeadOrDown: true, IsTrulyDead: false) };
+        streak.ProcessWatched(corpseOutBubble, corpseOutBubble, true, false, stats);
+        streak.ProcessWatched(deadParty, deadParty, true, false, stats);
+        Assert(stats.CurrentSaveStreak == 1, "unrevived corpse leaving/re-entering entity bubble does not re-reset streak");
+
+        // Revival (HP > 0 and alive) re-arms death tracking so dying a second time resets streak again.
+        var revived = new[] { new WatchedMemberSnapshot(2, "Tank", 150, 200, 1, true, false, false) };
+        streak.ProcessWatched(revived, revived, true, false, stats);
+        Assert(streak.ProcessWatched(deadParty, deadParty, true, false, stats) && stats.CurrentSaveStreak == 0,
+            "revived ally dying again resets CurrentSaveStreak");
+
+        // Town `/death` latches corpse without wiping active streak.
+        HealerStats.ApplyClutchSave(stats, new ClutchSaveEvent(4, "Wizard", 15, 100, 15.0, 50));
+        var townCorpse = new[] { new WatchedMemberSnapshot(4, "Wizard", 0, 100, 2, true, true, IsTrulyDead: true) };
+        Assert(!streak.ProcessWatched(townCorpse, townCorpse, true, inTown: true, stats) && stats.CurrentSaveStreak == 1,
+            "death in town latches corpse without resetting active streak");
+
+        // 2. Reflex Timer ([50..10000ms], sub-50ms ignored without burning alert, >10000ms rejected, single sample per AlertGeneration)
+        var reflex = new ReflexTracker();
+        var reflexSettings = new Settings();
+        var alertGen1 = new AlertBannerView(BannerSeverity.LowHp, TrackingMode.Party, "HEAL Tank (20%)", "40/200 HP", 1, 2, "Tank", 20, 1, "", "");
+
+        reflex.OnAlertEvaluated(alertGen1, 100.0);
+        Assert(reflex.TryRecordSelfCast(100.03, reflexSettings) is null && reflexSettings.ReflexSampleCount == 0,
+            "sub-50ms pre-cast (30ms) ignored without consuming active alert");
+        Assert(reflex.TryRecordSelfCast(100.05, reflexSettings) == 50 && reflexSettings.BestReflexMs == 50 && reflexSettings.AvgReflexMs == 50 && reflexSettings.ReflexSampleCount == 1,
+            "50ms boundary reflex sample recorded");
+        Assert(reflex.TryRecordSelfCast(100.40, reflexSettings) is null && reflexSettings.ReflexSampleCount == 1,
+            "second cast during same AlertGeneration does not double-count");
+
+        var alertGen2 = alertGen1 with { AlertGeneration = 2 };
+        reflex.OnAlertEvaluated(alertGen2, 200.0);
+        Assert(reflex.TryRecordSelfCast(210.0, reflexSettings) == 10000 && reflexSettings.BestReflexMs == 50 && reflexSettings.AvgReflexMs == 5025 && reflexSettings.ReflexSampleCount == 2,
+            "10000ms upper boundary recorded and running average computed accurately");
+
+        var alertGen3 = alertGen1 with { AlertGeneration = 3 };
+        reflex.OnAlertEvaluated(alertGen3, 300.0);
+        Assert(reflex.TryRecordSelfCast(310.01, reflexSettings) is null && reflexSettings.ReflexSampleCount == 2,
+            "> 10000ms late cast rejected");
+
+        reflexSettings.PeopleSaved = 9;
+        reflexSettings.CurrentSaveStreak = 4;
+        reflexSettings.BestSaveStreak = 7;
+        reflexSettings.ClosestCallPlayerName = "Tank";
+        reflexSettings.ClosestCallPreHealHp = 3;
+        reflexSettings.ClosestCallPreHealPercent = 1.5;
+        reflexSettings.BiggestOverkillSaved = 250;
+        reflexSettings.OnePercentClubSaves = 2;
+        reflexSettings.ResetLiveStats();
+        Assert(reflexSettings.PeopleSaved == 0 && reflexSettings.CurrentSaveStreak == 0 && reflexSettings.BestSaveStreak == 0
+               && reflexSettings.ClosestCallPlayerName == "" && reflexSettings.ClosestCallPreHealHp == 0 && reflexSettings.ClosestCallPreHealPercent == 0.0
+               && reflexSettings.BiggestOverkillSaved == 0 && reflexSettings.OnePercentClubSaves == 0
+               && reflexSettings.BestReflexMs == 0 && reflexSettings.AvgReflexMs == 0 && reflexSettings.ReflexSampleCount == 0,
+            "ResetLiveStats clears all 11 persisted gamification fields");
+
+        // 3. All 8 Prestige Rank boundaries
+        Assert(HealerStats.RankForSaves(0) == "Initiate"
+               && HealerStats.RankForSaves(1) == "Field Medic" && HealerStats.RankForSaves(4) == "Field Medic"
+               && HealerStats.RankForSaves(5) == "Combat Healer" && HealerStats.RankForSaves(14) == "Combat Healer"
+               && HealerStats.RankForSaves(15) == "Lifeweaver" && HealerStats.RankForSaves(29) == "Lifeweaver"
+               && HealerStats.RankForSaves(30) == "Beacon of Hope" && HealerStats.RankForSaves(59) == "Beacon of Hope"
+               && HealerStats.RankForSaves(60) == "Soulguard" && HealerStats.RankForSaves(99) == "Soulguard"
+               && HealerStats.RankForSaves(100) == "Reaper's Bane" && HealerStats.RankForSaves(249) == "Reaper's Bane"
+               && HealerStats.RankForSaves(250) == "Immortal Anchor",
+            "all 8 RankForSaves prestige tier boundaries match spec");
+
+        // 4. Pure printable ASCII Chat Scorecard (fresh, realistic, and adversarial int.MaxValue + Unicode/newlines)
+        static bool IsValidScorecard(string s) =>
+            s.Length is >= 1 and <= HealerStats.MaxScorecardLength
+            && !s.Contains('\n') && !s.Contains('\r')
+            && s.All(c => c is >= (char)0x20 and <= (char)0x7E);
+
+        string freshCard = HealerStats.FormatChatScorecard(new Settings());
+        Assert(IsValidScorecard(freshCard) && freshCard.Contains("Initiate: 0 saved"), "fresh scorecard is valid printable ASCII <= 185 chars");
+
+        string richCard = HealerStats.FormatChatScorecard(stats);
+        Assert(IsValidScorecard(richCard) && richCard.Contains("1% Club:") && richCard.Contains("Closest: Rogue"),
+            "populated scorecard includes 1% Club and Closest Call in pure ASCII <= 185 chars");
+
+        string adversarialCard = HealerStats.FormatChatScorecard(new Settings
+        {
+            PeopleSaved = int.MaxValue,
+            CurrentSaveStreak = int.MaxValue,
+            BestSaveStreak = int.MaxValue,
+            OnePercentClubSaves = int.MaxValue,
+            ClosestCallPlayerName = "🔥\r\n" + new string('Z', 90) + " — • ‘Tank’",
+            ClosestCallPreHealPercent = 99.99,
+            ClosestCallPreHealHp = int.MaxValue,
+            BestReflexMs = 9999,
+            AvgReflexMs = 9999,
+            ReflexSampleCount = int.MaxValue,
+            BiggestOverkillSaved = int.MaxValue
+        });
+        Assert(IsValidScorecard(adversarialCard), $"adversarial scorecard stays pure printable ASCII <= 185 chars (len={adversarialCard.Length})");
+    }
+
     private static void TestHotkeyMatcherAndDeduplication()
     {
         var matcher = new HotkeyMatcher(0.25);
-        var togglePlugin = new HotkeyBinding(0x4B, true, true, false); // Ctrl+Shift+K
-        var focus = new HotkeyBinding(0x48, true, true, false);        // Ctrl+Shift+H
-        var toggle = new HotkeyBinding(0x4A, true, true, false);       // Ctrl+Shift+J
-        var critical = new HotkeyBinding(0x54, true, true, false);     // Ctrl+Shift+T
+        var togglePlugin = new HotkeyBinding(0x4B, true, true, false);
+        var focus = new HotkeyBinding(0x48, true, true, false);
+        var toggle = new HotkeyBinding(0x4A, true, true, false);
+        var critical = new HotkeyBinding(0x54, true, true, false);
 
         Assert(togglePlugin.Format() == "Ctrl+Shift+K", "Ctrl+Shift+K format");
         Assert(focus.Format() == "Ctrl+Shift+H", "Ctrl+Shift+H format");
@@ -328,7 +519,6 @@ internal static class Program
         Assert(!matcher.UpdatePollKeyState(0x48, false), "key release clears held state");
         Assert(matcher.UpdatePollKeyState(0x48, true), "pressing again after release triggers rising edge");
 
-        // SDK auto-repeat suppression while key remains down across > 250ms.
         Assert(matcher.UpdateSdkKeyState(0x4B, true), "SDK KeyDown rising edge accepted");
         Assert(!matcher.UpdateSdkKeyState(0x4B, true), "SDK auto-repeat while held suppressed");
         matcher.ReleaseSdkKey(0x4B);
@@ -374,25 +564,44 @@ internal static class Program
             HpThresholdPercent = 1,
             RecoveryHysteresisPercent = 99,
             DeadAlertSeconds = -5,
+            MaxAlertSeconds = 999,
             FontSizePixels = 999,
+            BannerOpacity = 10,
             FlashIntervalMs = 10,
+            SaveWindowSeconds = double.NaN,
+            SelfCastWindowSeconds = 99.0,
+            MinHealDelta = 0,
             HudX = double.NaN,
             HudY = 2.5,
             StatusFontSizePixels = 2,
             StatusHudX = -1.0,
             StatusHudY = double.NaN,
             PeopleSaved = -7,
+            CurrentSaveStreak = 5,
+            BestSaveStreak = 2,
+            ClosestCallPlayerName = "Ghost",
+            ClosestCallPreHealHp = 0,
+            ClosestCallPreHealPercent = 40.0,
+            ReflexSampleCount = 0,
+            BestReflexMs = 300,
+            AvgReflexMs = 300,
             AutoTargetCooldownSeconds = double.PositiveInfinity,
             FocusTargetHotkey = new HotkeyBinding(0xFFFF, true, false, false),
             ToggleModeHotkey = new HotkeyBinding(0x11, true, false, false)
         };
         invalid.Validate();
         Assert(invalid.Mode == TrackingMode.Party && invalid.TargetingMethod == TargetMethod.Auto, "invalid enums reset to defaults");
-        Assert(invalid.HpThresholdPercent == 5 && invalid.RecoveryHysteresisPercent == 20, "threshold and hysteresis clamped");
-        Assert(invalid.DeadAlertSeconds == 0 && invalid.FontSizePixels == 140 && invalid.FlashIntervalMs == 100, "dead alert, font, and flash interval clamped");
+        Assert(invalid.HpThresholdPercent == 5 && invalid.RecoveryHysteresisPercent == 20 && invalid.MaxAlertSeconds == 120,
+            "threshold, hysteresis, and MaxAlertSeconds clamped");
+        Assert(invalid.DeadAlertSeconds == 0 && invalid.FontSizePixels == 140 && invalid.BannerOpacity == 80 && invalid.FlashIntervalMs == 100,
+            "dead alert, font, opacity, and flash interval clamped");
+        Assert(invalid.SaveWindowSeconds == 5.0 && invalid.SelfCastWindowSeconds == 15.0 && invalid.MinHealDelta == 1,
+            "SaveWindowSeconds, SelfCastWindowSeconds, and MinHealDelta clamped/sanitized");
         Assert(invalid.HudX == 0.50 && invalid.HudY == 1.0 && invalid.AutoTargetCooldownSeconds == 3.0, "HudX, HudY, and cooldown clamped/sanitized");
         Assert(invalid.StatusFontSizePixels == 9 && invalid.StatusHudX == 0.0 && invalid.StatusHudY == 0.76 && invalid.PeopleSaved == 0,
             "StatusFontSizePixels, StatusHudX, StatusHudY, and PeopleSaved clamped/sanitized");
+        Assert(invalid.CurrentSaveStreak == 5 && invalid.BestSaveStreak == 5 && invalid.ClosestCallPlayerName == "" && invalid.BestReflexMs == 0,
+            "Validate promotes BestSaveStreak >= CurrentSaveStreak and clears incomplete ClosestCall/Reflex records");
         Assert(invalid.FocusTargetHotkey.IsEmpty && invalid.ToggleModeHotkey.IsEmpty,
             "NormalizeHotkey clears out-of-range (>0xFE) and modifier-only VKs");
 
@@ -413,10 +622,20 @@ internal static class Program
             var s = store.Load();
             s.PluginEnabled = false;
             s.Mode = TrackingMode.SinglePlayer;
+            s.IncludeSelfInPartyMode = false;
+            s.SuppressAlertsInTown = true;
             s.FocusedPlayerId = 12345;
             s.FocusedPlayerName = "Tanky";
             s.FontSizePixels = 72;
+            s.BannerOpacity = 190;
+            s.FlashBanner = false;
             s.DeadAlertSeconds = 9;
+            s.MaxAlertSeconds = 18;
+            s.SaveWindowSeconds = 7.5;
+            s.SelfCastWindowSeconds = 4.5;
+            s.MinHealDelta = 15;
+            s.ShowSavedNotice = false;
+            s.ShowRankOnStatusHud = false;
             s.ExcludeFromCapture = false;
             s.HudX = 0.25;
             s.HudY = 0.75;
@@ -425,13 +644,32 @@ internal static class Program
             s.StatusHudX = 0.15;
             s.StatusHudY = 0.85;
             s.PeopleSaved = 17;
+            s.CurrentSaveStreak = 4;
+            s.BestSaveStreak = 9;
+            s.ClosestCallPlayerName = "Rogue";
+            s.ClosestCallPreHealHp = 3;
+            s.ClosestCallPreHealPercent = 1.5;
+            s.BiggestOverkillSaved = 420;
+            s.OnePercentClubSaves = 5;
+            s.BestReflexMs = 140;
+            s.AvgReflexMs = 230;
+            s.ReflexSampleCount = 6;
             s.AutoTargetCooldownSeconds = 4.5;
             s.TogglePluginHotkey = new HotkeyBinding(0x50, true, true, false);
             s.FocusTargetHotkey = new HotkeyBinding(0x46, true, false, true);
+            s.ResetSavedHotkey = new HotkeyBinding(0x52, true, true, false);
+            s.CopyScorecardHotkey = new HotkeyBinding(0x43, true, true, false);
             store.Save(s);
 
             var reloaded = store.Load();
-            Assert(!reloaded.PluginEnabled && reloaded.PeopleSaved == 17, "JSON round-trip preserves PluginEnabled and PeopleSaved");
+            Assert(!reloaded.PluginEnabled && reloaded.PeopleSaved == 17 && reloaded.CurrentSaveStreak == 4 && reloaded.BestSaveStreak == 9,
+                "JSON round-trip preserves PluginEnabled, PeopleSaved, and streaks");
+            Assert(!reloaded.IncludeSelfInPartyMode && reloaded.SuppressAlertsInTown && reloaded.MaxAlertSeconds == 18 && reloaded.BannerOpacity == 190 && !reloaded.FlashBanner,
+                "JSON round-trip preserves extended alert and banner settings");
+            Assert(reloaded.SaveWindowSeconds == 7.5 && reloaded.SelfCastWindowSeconds == 4.5 && reloaded.MinHealDelta == 15 && !reloaded.ShowSavedNotice && !reloaded.ShowRankOnStatusHud,
+                "JSON round-trip preserves clutch save and rank display settings");
+            Assert(reloaded.ClosestCallPlayerName == "Rogue" && reloaded.ClosestCallPreHealHp == 3 && reloaded.OnePercentClubSaves == 5 && reloaded.BestReflexMs == 140 && reloaded.ReflexSampleCount == 6,
+                "JSON round-trip preserves ClosestCall, 1% Club, and Reflex records");
             Assert(reloaded.Mode == TrackingMode.SinglePlayer && reloaded.FocusedPlayerId == 12345 && reloaded.FocusedPlayerName == "Tanky",
                 "JSON round-trip preserves tracking mode and focus target");
             Assert(reloaded.FontSizePixels == 72 && reloaded.DeadAlertSeconds == 9 && !reloaded.ExcludeFromCapture,
@@ -440,9 +678,13 @@ internal static class Program
                 "JSON round-trip preserves StatusHud settings");
             Assert(reloaded.HudX == 0.25 && reloaded.HudY == 0.75 && reloaded.AutoTargetCooldownSeconds == 4.5,
                 "JSON round-trip preserves HudX, HudY, and AutoTargetCooldownSeconds");
-            Assert(reloaded.TogglePluginHotkey == new HotkeyBinding(0x50, true, true, false) && reloaded.FocusTargetHotkey == new HotkeyBinding(0x46, true, false, true),
-                "JSON round-trip preserves TogglePluginHotkey and FocusTargetHotkey");
-            Assert(reloaded.Copy().FontSizePixels == 72 && reloaded.Copy().PeopleSaved == 17, "Copy preserves exact FontSizePixels and PeopleSaved");
+            Assert(reloaded.TogglePluginHotkey == new HotkeyBinding(0x50, true, true, false)
+                   && reloaded.FocusTargetHotkey == new HotkeyBinding(0x46, true, false, true)
+                   && reloaded.ResetSavedHotkey == new HotkeyBinding(0x52, true, true, false)
+                   && reloaded.CopyScorecardHotkey == new HotkeyBinding(0x43, true, true, false),
+                "JSON round-trip preserves all 6 hotkey bindings");
+            Assert(reloaded.Copy().FontSizePixels == 72 && reloaded.Copy().PeopleSaved == 17 && reloaded.Copy().BestReflexMs == 140,
+                "Copy preserves exact FontSizePixels, PeopleSaved, and gamification stats");
         }
         finally
         {
@@ -462,7 +704,21 @@ internal static class Program
         var critOff = BannerPresentation.Compute(critView, settings, false, false, 0.25, 0.0);
         var critOn2 = BannerPresentation.Compute(critView, settings, false, false, 0.50, 0.0);
         Assert(critOn.Visible && critOn.FlashOn && !critOff.FlashOn && critOn2.FlashOn, "CriticalDown alternates flash phase at FlashIntervalMs");
-        Assert(critOn.BackgroundColorArgb != critOff.BackgroundColorArgb && critOn.FontSizePixels == 64, "CriticalDown changes colors across flash phases and keeps exact integer font");
+        Assert(critOn.BackgroundColorArgb == unchecked((int)0xF0960A14) && critOn.BackgroundColorArgb != critOff.BackgroundColorArgb && critOn.FontSizePixels == 64,
+            "CriticalDown preserves exact default 235 opacity ARGB, changes colors across flash phases, and keeps integer font");
+
+        // BannerOpacity scales background alpha monotonically (80 < 235 < 255) and FlashBanner = false keeps steady frame.
+        var dimFrame = BannerPresentation.Compute(critView, new Settings { BannerOpacity = 80 }, false, false, 0.0, 0.0);
+        var fullFrame = BannerPresentation.Compute(critView, new Settings { BannerOpacity = 255 }, false, false, 0.0, 0.0);
+        int alphaDim = (dimFrame.BackgroundColorArgb >> 24) & 0xFF;
+        int alphaDef = (critOn.BackgroundColorArgb >> 24) & 0xFF;
+        int alphaFull = (fullFrame.BackgroundColorArgb >> 24) & 0xFF;
+        Assert(alphaDim < alphaDef && alphaDef < alphaFull && alphaFull == 255, "BannerOpacity scales background alpha monotonically");
+
+        var steadySettings = new Settings { FlashBanner = false, FlashIntervalMs = 250 };
+        var steadyAtHalf = BannerPresentation.Compute(critView, steadySettings, false, false, 0.25, 0.0);
+        Assert(steadyAtHalf.FlashOn && steadyAtHalf.BackgroundColorArgb == critOn.BackgroundColorArgb,
+            "FlashBanner=false holds steady non-flashing primary frame");
 
         var lowOn = BannerPresentation.Compute(lowView, settings, false, false, 0.0, 0.0);
         var lowOff = BannerPresentation.Compute(lowView, settings, false, false, 0.25, 0.0);
@@ -489,29 +745,36 @@ internal static class Program
 
     private static void TestStatusHudPresentation()
     {
-        var settings = new Settings { StatusFontSizePixels = 14, HpThresholdPercent = 50, Mode = TrackingMode.Party };
+        var settings = new Settings { StatusFontSizePixels = 14, HpThresholdPercent = 50, Mode = TrackingMode.Party, ShowRankOnStatusHud = true };
         var normalView = new AlertBannerView(BannerSeverity.None, TrackingMode.Party, "", "", 0, null, "", null, 0, "", "", true, 3);
         var alertView = new AlertBannerView(BannerSeverity.LowHp, TrackingMode.Party, "HEAL Alice (30%)", "60/200 HP", 1, 2, "Alice", 30, 1, "", "", true, 3);
 
         var normal = StatusHudPresentation.Compute(normalView, settings, false, 0);
-        Assert(normal.Visible && normal.FontSizePixels == 14 && !normal.ShowDragBox && normal.Text == "HEALER  PARTY <=50%  •  SAVED 3",
-            "StatusHud normal Party formatting");
+        Assert(normal.Visible && normal.FontSizePixels == 14 && !normal.ShowDragBox
+               && normal.Text == "HEALER  PARTY <=50%  •  SAVED 3 (Field Medic)",
+            "StatusHud normal Party formatting with prestige rank");
+
+        var noRankSettings = settings.Copy();
+        noRankSettings.ShowRankOnStatusHud = false;
+        var noRank = StatusHudPresentation.Compute(normalView, noRankSettings, false, 0);
+        Assert(noRank.Text == "HEALER  PARTY <=50%  •  SAVED 3",
+            "StatusHud ShowRankOnStatusHud=false omits prestige rank cleanly");
 
         var alerting = StatusHudPresentation.Compute(alertView, settings, false, 0);
-        Assert(alerting.Text == "HEALER  PARTY • ALERT  •  SAVED 3" && alerting.TextColorArgb != normal.TextColorArgb,
+        Assert(alerting.Text == "HEALER  PARTY • ALERT  •  SAVED 3 (Field Medic)" && alerting.TextColorArgb != normal.TextColorArgb,
             "StatusHud Party alert formatting and distinct color");
 
-        var focusSettings = new Settings { Mode = TrackingMode.SinglePlayer, FocusedPlayerName = "Tanky", HpThresholdPercent = 45 };
+        var focusSettings = new Settings { Mode = TrackingMode.SinglePlayer, FocusedPlayerName = "Tanky", HpThresholdPercent = 45, ShowRankOnStatusHud = true };
         var focusFrame = StatusHudPresentation.Compute(normalView with { PeopleSaved = 7 }, focusSettings, false, 0);
-        Assert(focusFrame.Text == "HEALER  FOCUS: Tanky <=45%  •  SAVED 7", "StatusHud SinglePlayer focus formatting");
+        Assert(focusFrame.Text == "HEALER  FOCUS: Tanky <=45%  •  SAVED 7 (Combat Healer)", "StatusHud SinglePlayer focus formatting");
 
-        var pausedSettings = new Settings { Mode = TrackingMode.Off };
+        var pausedSettings = new Settings { Mode = TrackingMode.Off, ShowRankOnStatusHud = true };
         var pausedFrame = StatusHudPresentation.Compute(normalView with { PeopleSaved = 2 }, pausedSettings, false, 0);
-        Assert(pausedFrame.Text == "HEALER  PAUSED  •  SAVED 2", "StatusHud paused formatting");
+        Assert(pausedFrame.Text == "HEALER  PAUSED  •  SAVED 2 (Field Medic)", "StatusHud paused formatting");
 
-        var offSettings = new Settings { PluginEnabled = false };
+        var offSettings = new Settings { PluginEnabled = false, ShowRankOnStatusHud = true };
         var offFrame = StatusHudPresentation.Compute(normalView with { PluginEnabled = false }, offSettings, false, 0);
-        Assert(offFrame.Visible && offFrame.Text == "HEALER  OFF", "StatusHud master-off formatting");
+        Assert(offFrame.Visible && offFrame.Text == "HEALER  OFF", "StatusHud master-off formatting stays HEALER  OFF");
 
         var hiddenSettings = new Settings { StatusHudEnabled = false };
         Assert(!StatusHudPresentation.Compute(normalView, hiddenSettings, false, 0).Visible,

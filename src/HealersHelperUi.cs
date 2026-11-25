@@ -18,7 +18,7 @@ internal sealed class HealersHelperUi : IPluginUI, IDisposable
 
     public float? FocusedOpacity => 1f;
     public bool EnabledInCharacterSelection => true;
-    public Tuple<int, int> MinSize => Tuple.Create(_form?.MinimumSize.Width ?? 380, _form?.MinimumSize.Height ?? 300);
+    public Tuple<int, int> MinSize => Tuple.Create(_form?.MinimumSize.Width ?? 380, _form?.MinimumSize.Height ?? 320);
     public object UserInterfaceForm => _form is null || _form.IsDisposed ? _form = new HealerControlForm(_plugin) : _form;
 
     public Image ToolbarImage
@@ -83,18 +83,30 @@ internal sealed class HealerControlForm : Form
 
     private readonly HealersHelperPlugin _plugin;
     private readonly Font _headerFont = new("Segoe UI", 9.5f, FontStyle.Bold);
+    private readonly ToolTip _toolTip = new() { ShowAlways = true };
     private readonly Label _pluginStateLabel;
     private readonly Label _peopleSavedLabel;
-    private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 4, 2, 2) };
+    private readonly Label _gamificationLabel = new() { Name = "GamificationSummaryLabel", AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(215, 225, 240) };
+    private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
     private readonly Label _targetingLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(180, 210, 235) };
     private readonly ComboBox _modeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 115 };
     private readonly ComboBox _playerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 175 };
     private readonly ListBox _membersList = new() { Dock = DockStyle.Top, Height = 96, IntegralHeight = false, BackColor = Color.FromArgb(18, 22, 29), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 250 };
 
+    private readonly Button _toggleBtn;
+    private readonly Button _cycleBtn;
+    private readonly Button _focusBtn;
+    private readonly Button _targetCritBtn;
+    private readonly Button _resetSavedBtn;
+    private readonly Button _copyScorecardBtn;
+
     private bool _updatingSelectors;
+    private int _lastTooltipRevision = -2;
     private string _lastMemberSignature = "";
     private string _lastPlayerSignature = "";
+
+    internal ToolTip ButtonToolTip => _toolTip;
 
     public HealerControlForm(HealersHelperPlugin plugin)
     {
@@ -111,7 +123,7 @@ internal sealed class HealerControlForm : Form
         _peopleSavedLabel = new Label
         {
             Name = "PeopleSavedLabel",
-            Text = "People Saved: 0",
+            Text = "People Saved: 0 (Initiate)",
             AutoSize = true,
             Margin = new Padding(2, 2, 2, 2),
             Font = _headerFont,
@@ -122,8 +134,8 @@ internal sealed class HealerControlForm : Form
         FormBorderStyle = FormBorderStyle.None;
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Size = new Size(440, 360);
-        MinimumSize = new Size(380, 300);
+        Size = new Size(440, 380);
+        MinimumSize = new Size(380, 320);
         AutoScroll = true;
         BackColor = Color.FromArgb(24, 28, 36);
         ForeColor = Color.White;
@@ -134,29 +146,32 @@ internal sealed class HealerControlForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 7,
             Padding = new Padding(6)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 7; i++)
         {
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         }
 
-        // Row 0: Prominent live Plugin ON/OFF and People Saved header
+        // Row 0: Prominent live Plugin ON/OFF and People Saved + Prestige Rank header
         var summaryRow = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = true,
-            Margin = new Padding(0, 0, 0, 4)
+            Margin = new Padding(0, 0, 0, 2)
         };
         summaryRow.Controls.Add(_pluginStateLabel);
         summaryRow.Controls.Add(_peopleSavedLabel);
         layout.Controls.Add(summaryRow, 0, 0);
 
-        // Row 1: Primary action buttons in wrapping FlowLayoutPanel
+        // Row 1: Compact gamification stats summary
+        layout.Controls.Add(_gamificationLabel, 0, 1);
+
+        // Row 2: Primary action buttons in wrapping FlowLayoutPanel
         var buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -166,32 +181,33 @@ internal sealed class HealerControlForm : Form
             Margin = new Padding(0, 0, 0, 4)
         };
 
-        var toggleBtn = new Button { Name = "TogglePluginButton", Text = "Toggle ON/OFF", AutoSize = true };
-        var cycleBtn = new Button { Text = "Cycle Mode", AutoSize = true };
-        var focusBtn = new Button { Text = "Focus Target", AutoSize = true };
-        var targetCritBtn = new Button { Text = "Target Critical", AutoSize = true };
-        var previewBtn = new Button { Text = "Preview Banner", AutoSize = true };
-        var moveBannerBtn = new Button { Text = "Move Banner", AutoSize = true };
+        _toggleBtn = new Button { Name = "TogglePluginButton", Text = "Toggle ON/OFF", AutoSize = true };
+        _cycleBtn = new Button { Name = "CycleModeButton", Text = "Cycle Mode", AutoSize = true };
+        _focusBtn = new Button { Name = "FocusTargetButton", Text = "Focus Target", AutoSize = true };
+        _targetCritBtn = new Button { Name = "TargetCriticalButton", Text = "Target Critical", AutoSize = true };
+        var previewBtn = new Button { Name = "PreviewBannerButton", Text = "Preview Banner", AutoSize = true };
+        var moveBannerBtn = new Button { Name = "MoveBannerButton", Text = "Move Banner", AutoSize = true };
         var moveStatusBtn = new Button { Name = "MoveStatusButton", Text = "Move Status", AutoSize = true };
-        var resetSavedBtn = new Button { Name = "ResetSavedButton", Text = "Reset Saved", AutoSize = true };
-        var settingsBtn = new Button { Text = "Settings...", AutoSize = true };
+        _copyScorecardBtn = new Button { Name = "CopyScorecardButton", Text = "Copy Chat Card", AutoSize = true };
+        _resetSavedBtn = new Button { Name = "ResetSavedButton", Text = "Reset Saved", AutoSize = true };
+        var settingsBtn = new Button { Name = "SettingsButton", Text = "Settings...", AutoSize = true };
 
-        toggleBtn.Click += (_, _) =>
+        _toggleBtn.Click += (_, _) =>
         {
             _plugin.Engine?.TogglePluginEnabled();
             RefreshState();
         };
-        cycleBtn.Click += (_, _) =>
+        _cycleBtn.Click += (_, _) =>
         {
             _plugin.Engine?.CycleMode();
             RefreshState();
         };
-        focusBtn.Click += (_, _) =>
+        _focusBtn.Click += (_, _) =>
         {
             _plugin.Engine?.FocusCurrentTarget();
             RefreshState();
         };
-        targetCritBtn.Click += (_, _) =>
+        _targetCritBtn.Click += (_, _) =>
         {
             _plugin.Engine?.TargetCriticalNow();
             RefreshState();
@@ -199,7 +215,12 @@ internal sealed class HealerControlForm : Form
         previewBtn.Click += (_, _) => _plugin.Hud?.Preview();
         moveBannerBtn.Click += (_, _) => _plugin.Hud?.Move();
         moveStatusBtn.Click += (_, _) => _plugin.Hud?.MoveStatus();
-        resetSavedBtn.Click += (_, _) =>
+        _copyScorecardBtn.Click += (_, _) =>
+        {
+            _plugin.Engine?.CopyChatScorecard();
+            RefreshState();
+        };
+        _resetSavedBtn.Click += (_, _) =>
         {
             _plugin.Engine?.ResetPeopleSaved();
             RefreshState();
@@ -218,12 +239,12 @@ internal sealed class HealerControlForm : Form
 
         buttons.Controls.AddRange(new Control[]
         {
-            toggleBtn, cycleBtn, focusBtn, targetCritBtn, previewBtn,
-            moveBannerBtn, moveStatusBtn, resetSavedBtn, settingsBtn
+            _toggleBtn, _cycleBtn, _focusBtn, _targetCritBtn, previewBtn,
+            moveBannerBtn, moveStatusBtn, _copyScorecardBtn, _resetSavedBtn, settingsBtn
         });
-        layout.Controls.Add(buttons, 0, 1);
+        layout.Controls.Add(buttons, 0, 2);
 
-        // Row 2: Quick mode / player selector
+        // Row 3: Quick mode / player selector
         var selectors = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -244,16 +265,18 @@ internal sealed class HealerControlForm : Form
         selectors.Controls.Add(_modeCombo);
         selectors.Controls.Add(new Label { Text = "Focus:", AutoSize = true, Margin = new Padding(8, 6, 4, 2) });
         selectors.Controls.Add(_playerCombo);
-        layout.Controls.Add(selectors, 0, 2);
+        layout.Controls.Add(selectors, 0, 3);
 
-        // Row 3 & 4: Live Status & Targeting Status labels
-        layout.Controls.Add(_statusLabel, 0, 3);
-        layout.Controls.Add(_targetingLabel, 0, 4);
+        // Row 4 & 5: Live Status & Targeting Status labels
+        layout.Controls.Add(_statusLabel, 0, 4);
+        layout.Controls.Add(_targetingLabel, 0, 5);
 
-        // Row 5: Live watched members summary / HP list
-        layout.Controls.Add(_membersList, 0, 5);
+        // Row 6: Live watched members summary / HP list
+        layout.Controls.Add(_membersList, 0, 6);
 
         Controls.Add(layout);
+
+        ApplyTooltips(new Settings(), -1);
 
         _refresh.Tick += (_, _) => RefreshState();
         VisibleChanged += (_, _) =>
@@ -268,6 +291,22 @@ internal sealed class HealerControlForm : Form
         };
 
         RefreshState();
+    }
+
+    private void ApplyTooltips(Settings settings, int revision)
+    {
+        if (revision == _lastTooltipRevision) return;
+        _lastTooltipRevision = revision;
+
+        static string WithChord(string description, HotkeyBinding binding) =>
+            binding.IsEmpty ? $"{description} (Hotkey: None)" : $"{description} ({binding.Format()})";
+
+        _toolTip.SetToolTip(_toggleBtn, WithChord("Master ON/OFF switch", settings.TogglePluginHotkey));
+        _toolTip.SetToolTip(_cycleBtn, WithChord("Toggle Party / Single-Player mode", settings.ToggleModeHotkey));
+        _toolTip.SetToolTip(_focusBtn, WithChord("Focus currently selected DDO player", settings.FocusTargetHotkey));
+        _toolTip.SetToolTip(_targetCritBtn, WithChord("Select lowest/critical watched player now", settings.TargetCriticalHotkey));
+        _toolTip.SetToolTip(_resetSavedBtn, WithChord("Reset People Saved and all healer records", settings.ResetSavedHotkey));
+        _toolTip.SetToolTip(_copyScorecardBtn, WithChord("Copy ASCII healer scorecard for DDO chat", settings.CopyScorecardHotkey));
     }
 
     private void OnModeChanged()
@@ -352,7 +391,7 @@ internal sealed class HealerControlForm : Form
         return null;
     }
 
-    private void RefreshState()
+    internal void RefreshState()
     {
         if (IsDisposed || Disposing) return;
 
@@ -361,22 +400,29 @@ internal sealed class HealerControlForm : Form
         {
             _pluginStateLabel.Text = "Plugin: ON";
             _pluginStateLabel.ForeColor = Color.FromArgb(122, 229, 130);
-            _peopleSavedLabel.Text = "People Saved: 0";
+            _peopleSavedLabel.Text = "People Saved: 0 (Initiate)";
+            _gamificationLabel.Text = "Streak: 0 (Best 0) • 1% Club: 0 • Reflex: —";
             _statusLabel.Text = "Waiting for game connection…";
             _targetingLabel.Text = "Targeting: idle";
             return;
         }
 
+        int rev = engine.SettingsRevision;
         var settings = engine.GetSettings();
+        ApplyTooltips(settings, rev);
+
         var view = engine.View();
         var members = engine.GetMembers();
         string hudStatus = _plugin.Hud?.Status ?? "HUD starting";
 
+        int saved = Math.Max(0, view.PeopleSaved);
+        string rank = HealerStats.RankForSaves(saved);
         _pluginStateLabel.Text = settings.PluginEnabled ? "Plugin: ON" : "Plugin: OFF";
         _pluginStateLabel.ForeColor = settings.PluginEnabled
             ? Color.FromArgb(122, 229, 130)
             : Color.FromArgb(255, 130, 130);
-        _peopleSavedLabel.Text = string.Create(CultureInfo.InvariantCulture, $"People Saved: {view.PeopleSaved}");
+        _peopleSavedLabel.Text = string.Create(CultureInfo.InvariantCulture, $"People Saved: {saved} ({rank})");
+        _gamificationLabel.Text = FormatGamificationSummary(settings);
 
         _statusLabel.Text = string.IsNullOrWhiteSpace(view.StatusLine)
             ? hudStatus
@@ -387,6 +433,28 @@ internal sealed class HealerControlForm : Form
 
         UpdateSelectors(settings, members);
         UpdateMembersList(members);
+    }
+
+    private static string FormatGamificationSummary(Settings s)
+    {
+        var parts = new List<string>(4)
+        {
+            string.Create(CultureInfo.InvariantCulture, $"Streak: {s.CurrentSaveStreak} (Best {s.BestSaveStreak})"),
+            string.Create(CultureInfo.InvariantCulture, $"1% Club: {s.OnePercentClubSaves}")
+        };
+
+        if (s.ClosestCallPreHealHp > 0 && !string.IsNullOrWhiteSpace(s.ClosestCallPlayerName))
+        {
+            parts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Closest: {s.ClosestCallPlayerName} {s.ClosestCallPreHealPercent:0.#}% ({s.ClosestCallPreHealHp} HP)"));
+        }
+
+        parts.Add(s.ReflexSampleCount > 0 && s.BestReflexMs > 0
+            ? string.Create(CultureInfo.InvariantCulture, $"Reflex: {s.AvgReflexMs}ms avg ({s.BestReflexMs}ms best)")
+            : "Reflex: —");
+
+        return string.Join(" • ", parts);
     }
 
     private void UpdateSelectors(Settings settings, WatchedMemberSnapshot[] members)
@@ -513,6 +581,7 @@ internal sealed class HealerControlForm : Form
         {
             _refresh.Stop();
             _refresh.Dispose();
+            _toolTip.Dispose();
         }
 
         base.Dispose(disposing);

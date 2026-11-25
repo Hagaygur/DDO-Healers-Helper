@@ -32,6 +32,9 @@ internal static class StatusHudPresentation
         }
 
         int saved = Math.Max(0, view.PeopleSaved);
+        string savedPart = settings.ShowRankOnStatusHud
+            ? string.Create(CultureInfo.InvariantCulture, $"SAVED {saved} ({HealerStats.RankForSaves(saved)})")
+            : string.Create(CultureInfo.InvariantCulture, $"SAVED {saved}");
         string text;
         int colorArgb;
 
@@ -42,7 +45,7 @@ internal static class StatusHudPresentation
         }
         else if (settings.Mode == TrackingMode.Off)
         {
-            text = string.Create(CultureInfo.InvariantCulture, $"HEALER  PAUSED  •  SAVED {saved}");
+            text = string.Create(CultureInfo.InvariantCulture, $"HEALER  PAUSED  •  {savedPart}");
             colorArgb = unchecked((int)0xFFD4B46A);
         }
         else if (settings.Mode == TrackingMode.SinglePlayer)
@@ -50,19 +53,19 @@ internal static class StatusHudPresentation
             string target = string.IsNullOrWhiteSpace(settings.FocusedPlayerName) ? "None" : settings.FocusedPlayerName;
             text = string.Create(
                 CultureInfo.InvariantCulture,
-                $"HEALER  FOCUS: {target} <={settings.HpThresholdPercent}%  •  SAVED {saved}");
+                $"HEALER  FOCUS: {target} <={settings.HpThresholdPercent}%  •  {savedPart}");
             colorArgb = unchecked((int)0xFF7AD7FF);
         }
         else if (view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown)
         {
-            text = string.Create(CultureInfo.InvariantCulture, $"HEALER  PARTY • ALERT  •  SAVED {saved}");
+            text = string.Create(CultureInfo.InvariantCulture, $"HEALER  PARTY • ALERT  •  {savedPart}");
             colorArgb = unchecked((int)0xFFFFAE42);
         }
         else
         {
             text = string.Create(
                 CultureInfo.InvariantCulture,
-                $"HEALER  PARTY <={settings.HpThresholdPercent}%  •  SAVED {saved}");
+                $"HEALER  PARTY <={settings.HpThresholdPercent}%  •  {savedPart}");
             colorArgb = unchecked((int)0xFF7AE582);
         }
 

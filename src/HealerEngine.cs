@@ -8,6 +8,7 @@ using System.Media;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using VoK.Sdk;
 using VoK.Sdk.Ddo;
 using VoK.Sdk.Ddo.Enums;
@@ -36,6 +37,11 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     private readonly object _gate = new();
     private readonly System.Threading.Timer _timer;
 
+    private StreakTracker? _streakTracker = new();
+    private ReflexTracker? _reflexTracker = new();
+    private StreakTracker Streak => _streakTracker ??= new StreakTracker();
+    private ReflexTracker Reflex => _reflexTracker ??= new ReflexTracker();
+
     private IntPtr _gameWindow;
     private int _gamePid;
     private Settings _settings;
@@ -57,6 +63,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
     private volatile bool _disposed;
     private volatile bool _pluginEnabledFlag = true;
+    private bool _inTown;
     private int _settingsRevision;
     private ulong? _character;
     private long _characterIdBits;
@@ -159,9 +166,12 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 if (_disposed) return Task.CompletedTask;
                 _state.Reset();
                 _savedTracker.Reset();
+                Streak.Reset();
+                Reflex.Reset();
                 _hotkeys.Reset();
-                _selector.ResetCooldown();
+                _selector?.ResetCooldown();
                 _character = null;
+                _inTown = false;
                 Volatile.Write(ref _characterIdBits, 0L);
                 ClearSelfCast();
                 _prevSelfSp = null;
@@ -199,15 +209,20 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         {
             if (_disposed) return;
             var copy = settings.Copy();
-            // Guard against stale SettingsDialog overwriting live PeopleSaved increments.
-            copy.PeopleSaved = _settings.PeopleSaved;
+            // Guard against stale SettingsDialog overwriting live gamification stats.
+            copy.CopyLiveStatsFrom(_settings);
             bool turnedOff = _settings.PluginEnabled && !copy.PluginEnabled;
             bool pausedMode = copy.Mode == TrackingMode.Off;
             CommitSettingsLocked(copy);
             if (turnedOff)
+            {
                 ResetTransientOnDisableLocked();
+            }
             else if (pausedMode)
+            {
                 _savedTracker.Reset();
+                Reflex.Reset();
+            }
             EvaluateLocked(Now);
         }
     }
@@ -259,13 +274,80 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         lock (_gate)
         {
             if (_disposed) return;
-            var copy = _settings.Copy();
-            copy.PeopleSaved = 0;
-            CommitSettingsLocked(copy);
-            if (_settings.PluginEnabled)
-                _state.SetNotice("PEOPLE SAVED RESET", "People Saved reset to 0", 1.8, Now);
-            EvaluateLocked(Now);
+            ResetPeopleSavedLocked(Now);
         }
+    }
+
+    private void ResetPeopleSavedLocked(double now)
+    {
+        var copy = _settings.Copy();
+        copy.ResetLiveStats();
+        CommitSettingsLocked(copy);
+        if (_settings.PluginEnabled)
+            _state.SetNotice("STATS RESET", "People Saved and healer records reset to 0", 1.8, now);
+        EvaluateLocked(now);
+    }
+
+    public string GetChatScorecard()
+    {
+        lock (_gate)
+        {
+            return HealerStats.FormatChatScorecard(_settings);
+        }
+    }
+
+    public bool CopyChatScorecard()
+    {
+        string card;
+        lock (_gate)
+        {
+            if (_disposed) return false;
+            card = HealerStats.FormatChatScorecard(_settings);
+            if (_settings.PluginEnabled)
+            {
+                _state.SetNotice("SCORECARD COPIED", "Paste into DDO chat (/p or /raid)", 2.0, Now);
+                EvaluateLocked(Now);
+            }
+        }
+
+        return TryCopyTextToClipboardSta(card);
+    }
+
+    private static bool TryCopyTextToClipboardSta(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+
+        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+        {
+            try
+            {
+                Clipboard.SetDataObject(text, true, 3, 15);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        bool copied = false;
+        var sta = new Thread(() =>
+        {
+            try
+            {
+                Clipboard.SetDataObject(text, true, 3, 15);
+                copied = true;
+            }
+            catch { }
+        })
+        {
+            IsBackground = true,
+            Name = "HealersHelper Clipboard STA"
+        };
+        sta.SetApartmentState(ApartmentState.STA);
+        sta.Start();
+        sta.Join(250);
+        return copied;
     }
 
     public bool FocusCurrentTarget()
@@ -322,7 +404,9 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             }
 
             PollForegroundHotkeysLocked(now);
+            CheckReflexSelfCastLocked();
             ScanMembersLocked(now);
+            CheckReflexSelfCastLocked();
             EvaluateLocked(now);
         }
         catch (Exception e)
@@ -338,7 +422,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 null,
                 _view.AlertGeneration,
                 _settings.PluginEnabled ? "Game data unavailable • retrying" : "Plugin Off",
-                _selector.LastStatus,
+                _selector?.LastStatus ?? "Targeting ready",
                 _settings.PluginEnabled,
                 _settings.PeopleSaved));
             if (Now - _lastErrorLog > 15)
@@ -350,6 +434,22 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         finally
         {
             Monitor.Exit(_gate);
+        }
+    }
+
+    private void CheckReflexSelfCastLocked()
+    {
+        if (!_settings.PluginEnabled || _settings.Mode == TrackingMode.Off)
+            return;
+
+        double lastCast = ReadLastSelfCast();
+        if (!double.IsFinite(lastCast))
+            return;
+
+        var copy = _settings.Copy();
+        if (Reflex.TryRecordSelfCast(lastCast, copy).HasValue)
+        {
+            CommitSettingsLocked(copy);
         }
     }
 
@@ -384,7 +484,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         bool shift = IsKeyDown(VkShift);
         bool alt = IsKeyDown(VkMenu);
 
-        Span<int> keys = stackalloc int[4];
+        Span<int> keys = stackalloc int[6];
         int count = 0;
         AddUniqueKey(keys, ref count, _settings.TogglePluginHotkey.VirtualKey);
         if (_settings.PluginEnabled)
@@ -392,6 +492,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             AddUniqueKey(keys, ref count, _settings.FocusTargetHotkey.VirtualKey);
             AddUniqueKey(keys, ref count, _settings.ToggleModeHotkey.VirtualKey);
             AddUniqueKey(keys, ref count, _settings.TargetCriticalHotkey.VirtualKey);
+            AddUniqueKey(keys, ref count, _settings.ResetSavedHotkey.VirtualKey);
+            AddUniqueKey(keys, ref count, _settings.CopyScorecardHotkey.VirtualKey);
         }
 
         for (int i = 0; i < count; i++)
@@ -438,6 +540,19 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         if (_hotkeys.ShouldTrigger(_settings.TargetCriticalHotkey, virtualKey, ctrl, shift, alt, now))
         {
             TargetCriticalLocked(now, bypassCooldown: true);
+            return;
+        }
+        if (_hotkeys.ShouldTrigger(_settings.ResetSavedHotkey, virtualKey, ctrl, shift, alt, now))
+        {
+            ResetPeopleSavedLocked(now);
+            return;
+        }
+        if (_hotkeys.ShouldTrigger(_settings.CopyScorecardHotkey, virtualKey, ctrl, shift, alt, now))
+        {
+            string card = HealerStats.FormatChatScorecard(_settings);
+            _state.SetNotice("SCORECARD COPIED", "Paste into DDO chat (/p or /raid)", 2.0, now);
+            EvaluateLocked(now);
+            _ = TryCopyTextToClipboardSta(card);
         }
     }
 
@@ -462,6 +577,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     {
         _state.Reset();
         _savedTracker.Reset();
+        Streak.Reset();
+        Reflex.Reset();
         _selector?.ResetCooldown();
         ClearSelfCast();
         _prevSelfSp = null;
@@ -539,7 +656,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     private bool TargetCriticalLocked(double now, bool bypassCooldown)
     {
         WatchedMemberSnapshot[] current = _members;
-        AlertBannerView view = _state.Evaluate(current, _settings, now, targetingStatus: _selector.LastStatus);
+        AlertBannerView view = _state.Evaluate(current, _settings, now, targetingStatus: _selector.LastStatus, inTown: _inTown);
         var watched = HealerState.FilterWatched(current, _settings);
 
         WatchedMemberSnapshot? target = null;
@@ -575,8 +692,11 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         {
             _state.Reset();
             _savedTracker.Reset();
-            _selector.ResetCooldown();
+            Streak.Reset();
+            Reflex.Reset();
+            _selector?.ResetCooldown();
             _character = charId;
+            _inTown = false;
             Volatile.Write(ref _characterIdBits, unchecked((long)(charId ?? 0)));
             ClearSelfCast();
             _prevSelfSp = null;
@@ -588,8 +708,16 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         {
             Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
             _savedTracker.Reset();
+            Streak.Reset();
+            Reflex.Reset();
+            _inTown = false;
             return;
         }
+
+        bool inTown = false;
+        try { inTown = _data.InTown() == true; }
+        catch { }
+        _inTown = inTown;
 
         ulong selfId = charId.Value;
         var list = new List<WatchedMemberSnapshot>(12);
@@ -603,7 +731,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
         if (selfEntity is not null && !selfEntity.IsDeleted)
         {
-            bool explicitDown = selfEntity.LifeState is LifeState.Dead or LifeState.Incapacitated;
+            bool isTrulyDead = selfEntity.LifeState == LifeState.Dead;
+            bool explicitDown = isTrulyDead || selfEntity.LifeState == LifeState.Incapacitated;
             int hp;
             int maxHp;
             if (!selfEntity.HitPoints_Current.HasValue && !explicitDown)
@@ -618,7 +747,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             }
 
             bool isDown = explicitDown || (maxHp > 0 && hp <= 0);
-            list.Add(new WatchedMemberSnapshot(selfId, selfName, hp, maxHp, 0, true, isDown));
+            list.Add(new WatchedMemberSnapshot(selfId, selfName, hp, maxHp, 0, true, isDown, isTrulyDead));
 
             int? currSp = selfEntity.SpellPoints_Current;
             if (_settings.PluginEnabled && _prevSelfSp.HasValue && currSp.HasValue && currSp.Value < _prevSelfSp.Value)
@@ -627,7 +756,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         }
         else
         {
-            list.Add(new WatchedMemberSnapshot(selfId, selfName, 0, 0, 0, false, false));
+            list.Add(new WatchedMemberSnapshot(selfId, selfName, 0, 0, 0, false, false, false));
             _prevSelfSp = null;
         }
         seen.Add(selfId);
@@ -656,10 +785,11 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                     ? m.Name
                     : (hasLiveEntity && !string.IsNullOrWhiteSpace(ent!.Name) ? ent.Name : $"Member {slot}");
 
+                bool isTrulyDead = m.Connected && hasLiveEntity && ent!.LifeState == LifeState.Dead;
                 bool isDown = (hasLiveEntity && ent!.LifeState is LifeState.Dead or LifeState.Incapacitated)
                     || (m.Connected && maxHp > 0 && hp <= 0);
 
-                list.Add(new WatchedMemberSnapshot(m.Id, name, hp, maxHp, slot, m.Connected, isDown));
+                list.Add(new WatchedMemberSnapshot(m.Id, name, hp, maxHp, slot, m.Connected, isDown, isTrulyDead));
             }
         }
 
@@ -675,21 +805,43 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             return;
         }
 
-        bool inTown = false;
-        try { inTown = _data.InTown() == true; }
-        catch { }
+        var watchedList = HealerState.FilterWatched(snapshot, _settings);
+        var watchedArray = watchedList.ToArray();
 
-        var saved = _savedTracker.ProcessScan(snapshot, _settings.PluginEnabled, inTown, now, ReadLastSelfCast());
-        if (saved.Count > 0)
+        var updated = _settings.Copy();
+        bool settingsChanged = Streak.ProcessWatched(snapshot, watchedList, _settings.PluginEnabled, inTown, updated);
+
+        var saves = _savedTracker.ProcessScanDetailed(
+            watchedArray,
+            _settings.PluginEnabled,
+            inTown,
+            now,
+            ReadLastSelfCast(),
+            _settings.SaveWindowSeconds,
+            _settings.MinHealDelta,
+            _settings.SelfCastWindowSeconds);
+
+        if (saves.Count > 0)
         {
-            var updated = _settings.Copy();
-            updated.PeopleSaved = (int)Math.Min(int.MaxValue, (long)updated.PeopleSaved + saved.Count);
+            foreach (var save in saves)
+            {
+                HealerStats.ApplyClutchSave(updated, save);
+            }
+            settingsChanged = true;
+
+            if (_settings.ShowSavedNotice)
+            {
+                _state.SetNotice(
+                    $"SAVED {saves[0].PlayerName}! (Saved: {updated.PeopleSaved})",
+                    $"Streak {updated.CurrentSaveStreak} • {HealerStats.RankForSaves(updated.PeopleSaved)}",
+                    2.0,
+                    now);
+            }
+        }
+
+        if (settingsChanged)
+        {
             CommitSettingsLocked(updated);
-            _state.SetNotice(
-                $"SAVED {saved[0]}! (Saved: {updated.PeopleSaved})",
-                "Clutch heal kept ally alive",
-                2.0,
-                now);
         }
     }
 
@@ -730,7 +882,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
         if (ent is null || ent.IsDeleted || ent.InstanceId == 0 || !ent.IsPlayer() || !seen.Add(ent.InstanceId)) return;
 
-        bool explicitDown = ent.LifeState is LifeState.Dead or LifeState.Incapacitated;
+        bool isTrulyDead = ent.LifeState == LifeState.Dead;
+        bool explicitDown = isTrulyDead || ent.LifeState == LifeState.Incapacitated;
         int hp;
         int maxHp;
         if (!ent.HitPoints_Current.HasValue && !explicitDown)
@@ -750,7 +903,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             : (!string.IsNullOrWhiteSpace(_settings.FocusedPlayerName)
                 ? _settings.FocusedPlayerName
                 : $"Player 0x{ent.InstanceId:X}");
-        list.Add(new WatchedMemberSnapshot(ent.InstanceId, name, hp, maxHp, -1, true, isDown));
+        list.Add(new WatchedMemberSnapshot(ent.InstanceId, name, hp, maxHp, -1, true, isDown, isTrulyDead));
     }
 
     private void EvaluateLocked(double now)
@@ -763,7 +916,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 : "";
 
         string selectorStatus = _selector?.LastStatus ?? "Targeting ready";
-        AlertBannerView view = _state.Evaluate(current, _settings, now, statusLine, selectorStatus);
+        AlertBannerView view = _state.Evaluate(current, _settings, now, statusLine, selectorStatus, _inTown);
 
         if (_settings.PluginEnabled
             && view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown
@@ -796,6 +949,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             }
         }
 
+        Reflex.OnAlertEvaluated(view, now);
         Volatile.Write(ref _view, view);
     }
 
@@ -906,6 +1060,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             while (_hotkeyQueue.TryDequeue(out _)) { }
             _state.Reset();
             _savedTracker.Reset();
+            Streak.Reset();
+            Reflex.Reset();
             _hotkeys.Reset();
             Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
             Volatile.Write(ref _view, new AlertBannerView(
