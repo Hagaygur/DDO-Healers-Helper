@@ -33,7 +33,7 @@ Do not copy `VoK.Sdk.dll` into source control.
 | Release | `src/bin/Release/net8.0-windows/` | `HealersHelper-<Version>-plugin.zip` only |
 | Debug | `src/bin/Debug/net8.0-windows/` | Installer ZIP, `VoK.HealersHelper.dll`, `.deps.json`, `.metadata`, and `.pdb` |
 
-The installer ZIP always contains strictly three runtime entries under `plugins/HealersHelper/`, DLL first. `build.ps1` stamps `src/AssemblyInfo.cs` and `src/VoK.HealersHelper.metadata` when the requested version differs, builds Release, validates the 3-entry ZIP, runs `HealersHelper.Tests`, and copies the ZIP into `dist/`.
+The installer ZIP always contains strictly three runtime entries under `plugins/HealersHelper/`, DLL first. `build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` when the requested version differs, builds Release, validates the 3-entry ZIP, runs `HealersHelper.Tests`, and copies the ZIP into `dist/`.
 
 ## Linux cross-compilation
 

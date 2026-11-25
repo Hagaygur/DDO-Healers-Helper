@@ -14,6 +14,7 @@ using System.Windows.Forms;
 internal static class Program
 {
     private const int WsExTransparent = 0x20;
+    private const int WsExToolWindow = 0x80;
     private const int WsExLayered = 0x80000;
     private const int WsExNoActivate = 0x08000000;
     private const int GwlExStyle = -20;
@@ -54,26 +55,36 @@ internal static class Program
 
         object ui = pluginType.GetMethod("GetPluginUI")!.Invoke(plugin, null)!;
         Type uiContract = sdk.GetType("VoK.Sdk.Plugins.IPluginUI")!;
+        using var form = (Form)uiContract.GetProperty("UserInterfaceForm")!.GetValue(ui)!;
+
+        // 1. Verify true 380px minimum-width layout with visible controls BEFORE host toolbar exists.
+        form.Size = form.MinimumSize;
+        form.Show();
+        Application.DoEvents();
+        form.PerformLayout();
+        if (form.Width != form.MinimumSize.Width)
+            throw new Exception($"Expected initial minimum width {form.MinimumSize.Width}, got {form.Width}");
+        int checkedAt380 = CheckLayoutControls(form, form);
+        if (checkedAt380 < 10)
+            throw new Exception($"Expected >= 10 visible controls checked at 380px, checked {checkedAt380}");
+
+        // 2. Now create synthetic 720px toolbar host and verify FitToolbarWidth expansion.
         using var host = new Form { Width = 400, Height = 400 };
         var strip = new Panel { Width = 720, Height = 45 };
         strip.Controls.Add(new PictureBox { Name = (string)pluginType.GetProperty("Name")!.GetValue(plugin)!, Left = 680, Width = 36 });
         host.Controls.Add(strip);
         host.Show();
 
-        using var form = (Form)uiContract.GetProperty("UserInterfaceForm")!.GetValue(ui)!;
-        // First verify at minimum width (380px) before 720px toolbar expansion.
-        form.Size = form.MinimumSize;
-        form.PerformLayout();
-        CheckLayoutControls(form, form);
-
+        form.Hide();
         form.Show();
         Application.DoEvents();
         form.PerformLayout();
         if (form.Width < strip.Width)
             throw new Exception($"Plugin form width {form.Width} < host toolbar strip width {strip.Width}");
-        CheckLayoutControls(form, form);
+        int checkedAt720 = CheckLayoutControls(form, form);
+        if (checkedAt720 < 10)
+            throw new Exception($"Expected >= 10 visible controls checked at 720px, checked {checkedAt720}");
 
-        // Verify expected panel controls & labels exist and are visible.
         var badge = (Label)form.Controls.Find("PluginStateLabel", true).Single();
         var savedLabel = (Label)form.Controls.Find("PeopleSavedLabel", true).Single();
         if (!badge.Visible || !savedLabel.Visible || form.Controls.Find("MoveStatusButton", true).Length != 1 || form.Controls.Find("ResetSavedButton", true).Length != 1)
@@ -105,6 +116,7 @@ internal static class Program
 
             Set("_gate", new object());
             Set("_settings", settings);
+            Set("_pluginEnabledFlag", true);
             Set("_store", store);
             Set("_state", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.HealerState")!)!);
             Set("_savedTracker", Activator.CreateInstance(assembly.GetType("VoK.HealersHelper.PeopleSavedTracker")!)!);
@@ -132,27 +144,60 @@ internal static class Program
                 5)!;
             Set("_view", idleView);
 
-            // 1. SettingsDialog at minimum size + round-trip save (including PeopleSaved stale-dialog guard)
+            // 1. SettingsDialog at minimum size + hotkey Escape/Backspace/duplicate validation + round-trip save
             Type dialogType = assembly.GetType("VoK.HealersHelper.SettingsDialog")!;
+            MethodInfo processCmdKey = dialogType.GetMethod("ProcessCmdKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            bool SendDialogKey(Form dlg, Keys keys)
+            {
+                object[] callArgs = { new Message(), keys };
+                return (bool)processCmdKey.Invoke(dlg, callArgs)!;
+            }
+
             using (var dialog = (Form)Activator.CreateInstance(dialogType, engine)!)
             {
                 dialog.Show();
                 dialog.Size = dialog.MinimumSize;
                 Application.DoEvents();
                 dialog.PerformLayout();
-                CheckLayoutControls(dialog, dialog);
+                if (CheckLayoutControls(dialog, dialog) < 10)
+                    throw new Exception("SettingsDialog checked fewer than 10 visible controls");
 
                 var pluginEnabledBox = (CheckBox)dialog.Controls.Find("PluginEnabledCheckBox", true).Single();
                 var statusHudEnabledBox = (CheckBox)dialog.Controls.Find("StatusHudEnabledCheckBox", true).Single();
                 var statusFontBox = (TextBox)dialog.Controls.Find("StatusFontSizeTextBox", true).Single();
                 var toggleHotkeyBox = (TextBox)dialog.Controls.Find("TogglePluginHotkeyBox", true).Single();
+                var focusHotkeyBox = (TextBox)dialog.Controls.Find("FocusTargetHotkeyBox", true).Single();
                 var fontBox = (TextBox)dialog.Controls.Find("FontSizeTextBox", true).Single();
                 var deadNumeric = (NumericUpDown)dialog.Controls.Find("DeadAlertSecondsNumeric", true).Single();
                 var excludeBox = (CheckBox)dialog.Controls.Find("ExcludeFromCaptureCheckBox", true).Single();
                 var cooldownNumeric = (NumericUpDown)dialog.Controls.Find("AutoTargetCooldownNumeric", true).Single();
+                var statusLabel = (Label)dialog.Controls.Find("StatusLabel", true).Single();
+                var saveBtn = (Button)dialog.Controls.Find("SaveButton", true).Single();
 
                 if (toggleHotkeyBox.Text != "Ctrl+Shift+K")
                     throw new Exception($"Unexpected default TogglePluginHotkey text: {toggleHotkeyBox.Text}");
+
+                // Escape inside hotkey box must cancel recording WITHOUT closing SettingsDialog.
+                dialog.ActiveControl = focusHotkeyBox;
+                Application.DoEvents();
+                if (!SendDialogKey(dialog, Keys.Escape) || !dialog.Visible || focusHotkeyBox.Text != "Ctrl+Shift+H")
+                    throw new Exception("Escape in hotkey recorder closed dialog or failed to restore binding");
+
+                // Unmodified Backspace clears hotkey to None.
+                dialog.ActiveControl = focusHotkeyBox;
+                if (!SendDialogKey(dialog, Keys.Back) || focusHotkeyBox.Text != "None")
+                    throw new Exception($"Unmodified Backspace must clear hotkey to None, got '{focusHotkeyBox.Text}'");
+
+                // Duplicate hotkey (Ctrl+Shift+K == TogglePluginHotkey) must block Save.
+                if (!SendDialogKey(dialog, Keys.K | Keys.Control | Keys.Shift) || focusHotkeyBox.Text != "Ctrl+Shift+K")
+                    throw new Exception("Failed to record Ctrl+Shift+K into FocusTargetHotkeyBox");
+                saveBtn.PerformClick();
+                if (!dialog.Visible || !statusLabel.Text.Contains("Duplicate hotkey", StringComparison.Ordinal))
+                    throw new Exception("Duplicate hotkey was not rejected by SettingsDialog");
+
+                // Restore distinct Ctrl+Shift+H and save valid settings.
+                dialog.ActiveControl = focusHotkeyBox;
+                SendDialogKey(dialog, Keys.H | Keys.Control | Keys.Shift);
 
                 pluginEnabledBox.Checked = true;
                 statusHudEnabledBox.Checked = true;
@@ -164,8 +209,6 @@ internal static class Program
 
                 // Simulate a live PeopleSaved increment while the dialog is open.
                 settingsType.GetProperty("PeopleSaved")!.SetValue(settings, 8);
-
-                var saveBtn = (Button)dialog.Controls.Find("SaveButton", true).Single();
                 saveBtn.PerformClick();
             }
 
@@ -195,9 +238,10 @@ internal static class Program
             if ((int)viewType.GetProperty("PeopleSaved")!.GetValue(resetView)! != 0)
                 throw new Exception("ResetPeopleSaved did not reset PeopleSaved to 0");
 
-            Console.WriteLine("PASS SettingsDialog minimum-size layout, JSON round-trip, TogglePluginEnabled, and ResetPeopleSaved");
+            Console.WriteLine("PASS SettingsDialog minimum-size layout, Escape/Backspace/duplicate hotkeys, JSON round-trip, TogglePluginEnabled, and ResetPeopleSaved");
 
             // 2. BannerHudWindow layered native surface, styles, flash phases, and disposal
+            const long requiredEx = WsExTransparent | WsExToolWindow | WsExLayered | WsExNoActivate;
             Type hudType = assembly.GetType("VoK.HealersHelper.BannerHudWindow")!;
             Type cmdEnum = assembly.GetType("VoK.HealersHelper.HudCommand")!;
             object queue = Activator.CreateInstance(typeof(ConcurrentQueue<>).MakeGenericType(cmdEnum))!;
@@ -207,7 +251,6 @@ internal static class Program
             {
                 IntPtr handle = hud.Handle;
                 long exStyle = GetWindowLongPtr(handle, GwlExStyle).ToInt64();
-                const long requiredEx = WsExTransparent | WsExLayered | WsExNoActivate;
                 if ((exStyle & requiredEx) != requiredEx)
                     throw new Exception($"Missing required extended styles on BannerHudWindow: 0x{exStyle:X}");
 
@@ -263,13 +306,14 @@ internal static class Program
             }
             finally
             {
+                hudType.GetProperty("AllowClose", fields)!.SetValue(hud, true);
                 hud.Dispose();
             }
 
             if (!hud.IsDisposed)
                 throw new Exception("BannerHudWindow did not dispose cleanly");
 
-            Console.WriteLine("PASS BannerHudWindow WS_EX styles, huge banner DIB render, flash transitions, and disposal");
+            Console.WriteLine("PASS BannerHudWindow WS_EX styles (incl. TOOLWINDOW), huge banner DIB render, flash transitions, and disposal");
 
             // 3. StatusHudWindow compact DIB surface, WS_EX styles, OFF vs PARTY rendering, and disposal
             Type statusHudType = assembly.GetType("VoK.HealersHelper.StatusHudWindow")!;
@@ -278,7 +322,6 @@ internal static class Program
             {
                 IntPtr statusHandle = statusHud.Handle;
                 long statusExStyle = GetWindowLongPtr(statusHandle, GwlExStyle).ToInt64();
-                const long requiredEx = WsExTransparent | WsExLayered | WsExNoActivate;
                 if ((statusExStyle & requiredEx) != requiredEx)
                     throw new Exception($"Missing required extended styles on StatusHudWindow: 0x{statusExStyle:X}");
 
@@ -318,13 +361,14 @@ internal static class Program
             }
             finally
             {
+                statusHudType.GetProperty("AllowClose", fields)!.SetValue(statusHud, true);
                 statusHud.Dispose();
             }
 
             if (!statusHud.IsDisposed)
                 throw new Exception("StatusHudWindow did not dispose cleanly");
 
-            Console.WriteLine("PASS StatusHudWindow WS_EX styles, compact DIB size, transparent rendering, and disposal");
+            Console.WriteLine("PASS StatusHudWindow WS_EX styles (incl. TOOLWINDOW), compact DIB size, transparent rendering, and disposal");
         }
         finally
         {
@@ -351,8 +395,9 @@ internal static class Program
         return AssemblyLoadContext.Default.LoadFromStream(ms);
     }
 
-    private static void CheckLayoutControls(Control root, Control topForm)
+    private static int CheckLayoutControls(Control root, Control topForm)
     {
+        int checkedCount = 0;
         foreach (Control control in root.Controls)
         {
             if (control is Button)
@@ -368,6 +413,7 @@ internal static class Program
 
             if (control.Visible && (control is Button or ComboBox or TextBox or NumericUpDown or CheckBox))
             {
+                checkedCount++;
                 Rectangle inForm = topForm.RectangleToClient(control.Parent!.RectangleToScreen(control.Bounds));
                 if (inForm.Left < 0 || inForm.Right > topForm.ClientSize.Width)
                 {
@@ -375,7 +421,9 @@ internal static class Program
                 }
             }
 
-            CheckLayoutControls(control, topForm);
+            checkedCount += CheckLayoutControls(control, topForm);
         }
+
+        return checkedCount;
     }
 }

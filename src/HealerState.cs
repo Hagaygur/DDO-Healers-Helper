@@ -90,7 +90,7 @@ internal sealed class HealerState
         var presentIds = new HashSet<ulong>(members.Length);
         foreach (var m in members)
         {
-            if (m.Id != 0) presentIds.Add(m.Id);
+            if (m is not null && m.Id != 0) presentIds.Add(m.Id);
         }
 
         var watchedIds = new HashSet<ulong>(watched.Count);
@@ -233,14 +233,15 @@ internal sealed class HealerState
         return percent < recoverAt;
     }
 
-    private static List<WatchedMemberSnapshot> FilterWatched(WatchedMemberSnapshot[] members, Settings settings)
+    internal static List<WatchedMemberSnapshot> FilterWatched(WatchedMemberSnapshot[] members, Settings settings)
     {
         var list = new List<WatchedMemberSnapshot>(members.Length);
         if (settings.Mode == TrackingMode.Party)
         {
+            var seen = new HashSet<ulong>(members.Length);
             foreach (var m in members)
             {
-                if (m is not null && m.Id != 0) list.Add(m);
+                if (m is not null && m.Id != 0 && seen.Add(m.Id)) list.Add(m);
             }
             return list;
         }

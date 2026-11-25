@@ -26,7 +26,7 @@ Build a Dungeon Helper (DH) healer alert plugin (`VoK.HealersHelper`, display na
 - Keep the HUD separate from DH's hosted configuration panel. Retain `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WDA_EXCLUDEFROMCAPTURE` (`0x11`), and `HWND_TOPMOST` reassertion. Never infer live LS success solely from `SetWindowDisplayAffinity` / `GetWindowDisplayAffinity` readback.
 - Font sizes are exact integer pixel values (`FontSizePixels`: `18..140`; `StatusFontSizePixels`: `9..48`). Retain the stable plugin ID (`9b6c8e42-3d19-4f7a-9c54-7e21d804a6b3`) and plugin key (`ddo-healers-helper`). Keep `TogglePluginHotkey` (`Ctrl+Shift+K`) active even when `PluginEnabled` is `false`, and guard `PeopleSaved` against stale dialog saves.
 - A failing test blocks release; it does not justify bumping a version or weakening an assertion. Version contracts are observations of passing behavior, not a universal feature detector.
-- Preserve the distinction between IL/binary inspection, executed unit/smoke tests, and unverified live DDO/LS or GitHub-hosted runs. Never label compilation or synthetic smoke tests as live game verification.
+- Preserve the distinction between IL/binary inspection, executed unit/smoke/CI runs (including verified GitHub Actions `linux` + `build` + `release`), and unverified live DDO/LS runtime behavior. Never label compilation or synthetic smoke tests as live game verification.
 
 ## Commands from repository root
 
@@ -37,7 +37,7 @@ dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts 
 dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- src/bin/Release/net8.0-windows/HealersHelper-1.0.0-plugin.zip "$env:APPDATA\Dungeon Helper"
 ```
 
-Run checks relevant to the change. The solution cross-compiles on Linux with the compatible SDK; only Windows smoke and live DH execution require Windows. Every plugin build creates the installer: Release leaves only the ZIP in `src/bin/Release/net8.0-windows/`, while Debug retains DLL, deps.json, metadata, and PDB alongside the ZIP. `build.ps1` only modifies assembly/metadata versions when the requested version differs from the current stamp (preserving LF and UTF-8 without BOM).
+Run checks relevant to the change. The solution cross-compiles on Linux with the compatible SDK; only Windows smoke and live DH execution require Windows. Every plugin build creates the installer: Release leaves only the ZIP in `src/bin/Release/net8.0-windows/`, while Debug retains DLL, deps.json, metadata, and PDB alongside the ZIP. `build.ps1` only modifies `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` when the requested version differs from the current stamp (preserving LF and UTF-8 without BOM).
 
 ## Documentation and completion
 

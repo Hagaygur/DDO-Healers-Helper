@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $lock = Get-Content "$PSScriptRoot/sdk-lock.json" -Raw | ConvertFrom-Json
-$root = Join-Path $env:RUNNER_TEMP 'healers-helper-sdk'
+$tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { Join-Path (Get-Location) '.build/dh-sdk-win' }
+$root = Join-Path $tempBase 'healers-helper-sdk'
 New-Item -ItemType Directory -Force $root | Out-Null
 $msi = Join-Path $root 'DungeonHelper.msi'
 Invoke-WebRequest $lock.url -OutFile $msi
@@ -17,4 +18,7 @@ if (-not $sdk) { throw 'Pinned SDK DLL was not found in the installer.' }
 if ([Reflection.AssemblyName]::GetAssemblyName($sdk.FullName).Version.ToString() -ne $lock.sdkVersion) {
     throw 'Unexpected SDK assembly version.'
 }
-"DH_SDK_DIR=$($sdk.DirectoryName)" >> $env:GITHUB_ENV
+if ($env:GITHUB_ENV) {
+    "DH_SDK_DIR=$($sdk.DirectoryName)" >> $env:GITHUB_ENV
+}
+Write-Host "Verified SDK $($lock.sdkVersion): $($sdk.DirectoryName)"

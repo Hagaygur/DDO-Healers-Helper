@@ -22,6 +22,12 @@ $nextAsm = $nextAsm -replace 'AssemblyFileVersion\("[^"]+"\)', "AssemblyFileVers
 if ($nextAsm -ne $origAsm) {
     [System.IO.File]::WriteAllText($assemblyInfo, $nextAsm, $utf8NoBom)
 }
+$project = Join-Path $PSScriptRoot 'src\HealersHelper.csproj'
+$origCsproj = [System.IO.File]::ReadAllText($project)
+$nextCsproj = $origCsproj -replace '<Version>[^<]+</Version>', "<Version>$Version</Version>"
+if ($nextCsproj -ne $origCsproj) {
+    [System.IO.File]::WriteAllText($project, $nextCsproj, $utf8NoBom)
+}
 $metadataPath = Join-Path $PSScriptRoot 'src/VoK.HealersHelper.metadata'
 $origMeta = [System.IO.File]::ReadAllText($metadataPath)
 $metadata = $origMeta | ConvertFrom-Json
@@ -31,7 +37,6 @@ if ($metadata.Version -ne "$Version.0") {
     if (-not $nextMeta.EndsWith("`n")) { $nextMeta += "`n" }
     [System.IO.File]::WriteAllText($metadataPath, $nextMeta, $utf8NoBom)
 }
-$project = Join-Path $PSScriptRoot 'src\HealersHelper.csproj'
 dotnet build $project -c Release "-p:DungeonHelperDir=$DungeonHelperDir" "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) { throw 'Plugin build failed.' }
 $output = Join-Path $PSScriptRoot 'src/bin/Release/net8.0-windows'

@@ -91,7 +91,7 @@ internal sealed class Settings
     }
 
     private static HotkeyBinding NormalizeHotkey(HotkeyBinding? binding) =>
-        binding is null || binding.VirtualKey <= 0
+        binding is null || binding.VirtualKey <= 0 || binding.VirtualKey > 0xFE || HotkeyMatcher.IsModifierKey(binding.VirtualKey)
             ? HotkeyBinding.Empty
             : binding with { };
 }

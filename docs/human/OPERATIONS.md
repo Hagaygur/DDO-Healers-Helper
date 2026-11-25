@@ -42,9 +42,9 @@ First stable release is `1.0.0`. Publication triggers only when tracked C# plugi
 ## Live Windows integration checklist (required on target PC)
 
 Because live DDO and Lossless Scaling cannot be automated in headless CI:
-1. With LS off, verify `Preview Banner`, `Move Banner (20s)`, and exact integer `FontSizePixels` save/reopen.
-2. Test solo HP drop, party/raid HP drop below threshold, recovery above `Threshold + Hysteresis`, and `CriticalDown` (incapacitated negative HP / dead) timeout and recovery.
-3. Test `Focus Target` (`Ctrl+Shift+H`), `Cycle Mode` (`Ctrl+Shift+J`), and `Target Critical` (`Ctrl+Shift+T`) with DH `HotKeysEnabled` both on and off.
-4. Close the DH panel and test `Preview Banner` with Lossless Scaling on under both **WGC** and **DXGI** capture modes; confirm one unscaled banner above LS and click-through input to DDO.
+1. With LS off, verify `Preview Banner`, `Move Banner (20s)`, `Move Status (20s)`, and exact integer `FontSizePixels` / `StatusFontSizePixels` save/reopen.
+2. Test solo HP drop, party/raid HP drop below threshold, recovery above `Threshold + Hysteresis`, `CriticalDown` (incapacitated negative HP / dead) timeout and recovery, and clutch `People Saved` detection + `Reset Saved`.
+3. Test `Toggle ON/OFF` (`Ctrl+Shift+K`, including re-enabling while OFF), `Focus Target` (`Ctrl+Shift+H`, confirming monsters/NPCs are rejected), `Cycle Mode` (`Ctrl+Shift+J`), and `Target Critical` (`Ctrl+Shift+T`) with DH `HotKeysEnabled` both on and off.
+4. Close the DH panel and test both `BannerHudWindow` (`Preview Banner`) and `StatusHudWindow` with Lossless Scaling on under both **WGC** and **DXGI** capture modes; confirm unscaled crisp overlays above LS and click-through input to DDO.
 
 Agent counterpart: [Workflow](../agents/WORKFLOW.md).

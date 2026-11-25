@@ -26,11 +26,11 @@ All plugin C# source files live under `src/`.
 ```mermaid
 flowchart TD
   A["DH GameData (Self + GetPartyMembers + GetEntity) and Hotkeys"] --> B["HealerEngine scan and lock"]
-  B --> C["HealerState and TargetSelector"]
+  B --> C["HealerState, PeopleSavedTracker, and TargetSelector"]
   C --> D["Immutable AlertBannerView (Volatile)"]
-  D --> E["BannerHudWindow (STA thread)"]
+  D --> E["BannerHudWindow and StatusHudWindow (STA thread)"]
   F["DH Settings / Control Panel"] --> B
-  F --> G["HudCommand queue"]
+  F --> G["HudCommand queue (Preview, Move, MoveStatus, Stop)"]
   G --> E
 ```
 
@@ -48,8 +48,8 @@ Hotkeys listen to both `EventProvider.KeyDown` (when DH `HotKeysEnabled` is true
 
 ## Threading, native drawing, and Lossless Scaling
 
-The engine publishes immutable `AlertBannerView` snapshots via `Volatile`. `BannerHudController` runs a separate STA WinForms message loop (`Application.Run()`), draining `Preview`, `Move`, and `Stop` commands without blocking DH's UI thread on shutdown. `NativeHud` reuses a single `HDC` and top-down 32bpp `CreateDIBSection` surface until dimensions change, presenting via `UpdateLayeredWindow` (`ULW_ALPHA = 2`, `AC_SRC_ALPHA = 1`) with zero per-frame native allocations.
+The engine publishes immutable `AlertBannerView` snapshots via `Volatile`. `BannerHudController` runs a separate STA WinForms message loop (`Application.Run()`), hosting both `BannerHudWindow` and `StatusHudWindow` and draining `Preview`, `Move`, `MoveStatus`, and `Stop` commands without blocking DH's UI thread on shutdown. `NativeHud` reuses a single `HDC` and top-down 32bpp `CreateDIBSection` surface per HUD window until dimensions change, presenting via `UpdateLayeredWindow` (`ULW_ALPHA = 2`, `AC_SRC_ALPHA = 1`) with zero per-frame native allocations.
 
-`BannerHudWindow` sets `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, requests `SetWindowDisplayAffinity(Handle, 0x11)` (`WDA_EXCLUDEFROMCAPTURE`) when `ExcludeFromCapture` is enabled, reads back `GetWindowDisplayAffinity`, and reasserts `HWND_TOPMOST` periodically while visible. Foreground visibility permits DDO's process ID, DH's process ID, or `LosslessScaling`.
+Both `BannerHudWindow` and `StatusHudWindow` set `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, request `SetWindowDisplayAffinity(Handle, 0x11)` (`WDA_EXCLUDEFROMCAPTURE`) when `ExcludeFromCapture` is enabled, read back `GetWindowDisplayAffinity`, and reassert `HWND_TOPMOST` periodically while visible. Foreground visibility permits DDO's process ID, DH's process ID, or `LosslessScaling`.
 
 Agent counterpart: [Code map and invariants](../agents/CODE.md).

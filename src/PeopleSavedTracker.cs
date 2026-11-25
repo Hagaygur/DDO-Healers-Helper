@@ -5,22 +5,23 @@ using System.Linq;
 namespace VoK.HealersHelper;
 
 // Pure portable tracker for clutch saves: detects heals attributed to a recent
-// self cast followed within SaveWindowSeconds by a hit that exceeds PreHealHp
-// yet leaves the target alive.
+// self cast followed within SaveWindowSeconds by real damage (single or multi-hit)
+// that exceeds PreHealHp yet leaves the target alive, while ignoring MaxHP gear/buff caps.
 internal sealed class PeopleSavedTracker
 {
     public const double SelfCastWindowSeconds = 3.5;
     public const double SaveWindowSeconds = 5.0;
     public const int MinHealDelta = 5;
 
-    private sealed record HealWindow(int PreHealHp, double ExpiresAt);
+    private readonly record struct PrevHpState(int Hp, int MaxHp);
+    private sealed record HealWindow(int PreHealHp, long CumulativeDamage, double ExpiresAt);
 
-    private readonly Dictionary<ulong, int> _previousHp = new();
+    private readonly Dictionary<ulong, PrevHpState> _previous = new();
     private readonly Dictionary<ulong, HealWindow> _healWindows = new();
 
     public void Reset()
     {
-        _previousHp.Clear();
+        _previous.Clear();
         _healWindows.Clear();
     }
 
@@ -48,7 +49,7 @@ internal sealed class PeopleSavedTracker
             }
         }
 
-        PruneMissing(_previousHp, connectedIds);
+        PruneMissing(_previous, connectedIds);
         PruneMissing(_healWindows, connectedIds);
 
         bool selfCastRecent = double.IsFinite(lastSelfCastAt) && (now - lastSelfCastAt) <= SelfCastWindowSeconds;
@@ -62,49 +63,90 @@ internal sealed class PeopleSavedTracker
 
             if (inTown)
             {
-                _previousHp[member.Id] = member.HitPoints;
+                _healWindows.Remove(member.Id);
+                _previous[member.Id] = new PrevHpState(member.HitPoints, member.MaxHitPoints);
                 continue;
             }
 
-            if (!_previousHp.TryGetValue(member.Id, out int previousHp))
+            if (!_previous.TryGetValue(member.Id, out var prev))
             {
-                _previousHp[member.Id] = member.HitPoints;
+                _previous[member.Id] = new PrevHpState(member.HitPoints, member.MaxHitPoints);
                 continue;
             }
 
-            if (member.HitPoints > previousHp)
+            if (member.IsDeadOrDown || member.HitPoints <= 0)
             {
-                int delta = member.HitPoints - previousHp;
-                if (previousHp > 0 && !member.IsDeadOrDown && delta >= MinHealDelta && selfCastRecent)
+                _healWindows.Remove(member.Id);
+                _previous[member.Id] = new PrevHpState(Math.Min(0, member.HitPoints), member.MaxHitPoints);
+                continue;
+            }
+
+            if (member.HitPoints > prev.Hp)
+            {
+                long maxHpGain = prev.MaxHp > 0 && member.MaxHitPoints > prev.MaxHp
+                    ? (long)member.MaxHitPoints - prev.MaxHp
+                    : 0L;
+                long effectiveHeal = ((long)member.HitPoints - prev.Hp) - maxHpGain;
+
+                if (prev.Hp > 0
+                    && (prev.MaxHp <= 0 || prev.Hp < prev.MaxHp)
+                    && effectiveHeal >= MinHealDelta
+                    && selfCastRecent)
                 {
-                    int preHealHp = (_healWindows.TryGetValue(member.Id, out var existing) && now <= existing.ExpiresAt)
-                        ? Math.Min(existing.PreHealHp, previousHp)
-                        : previousHp;
-                    _healWindows[member.Id] = new HealWindow(preHealHp, now + SaveWindowSeconds);
+                    int preHealHp;
+                    if (_healWindows.TryGetValue(member.Id, out var existing) && now <= existing.ExpiresAt)
+                    {
+                        int effectiveFloor = (int)Math.Max(1L, existing.PreHealHp - existing.CumulativeDamage);
+                        preHealHp = Math.Min(effectiveFloor, prev.Hp);
+                    }
+                    else
+                    {
+                        preHealHp = prev.Hp;
+                    }
+
+                    _healWindows[member.Id] = new HealWindow(preHealHp, 0L, now + SaveWindowSeconds);
+                }
+                else if (!selfCastRecent
+                         && effectiveHeal > 0
+                         && _healWindows.TryGetValue(member.Id, out var openWin)
+                         && now <= openWin.ExpiresAt)
+                {
+                    _healWindows[member.Id] = openWin with
+                    {
+                        CumulativeDamage = Math.Max(0L, openWin.CumulativeDamage - effectiveHeal)
+                    };
                 }
             }
-            else if (member.HitPoints < previousHp)
+            else if (member.HitPoints < prev.Hp)
             {
-                int damageTaken = previousHp - member.HitPoints;
+                long maxHpDrop = prev.MaxHp > 0 && member.MaxHitPoints > 0 && member.MaxHitPoints < prev.MaxHp
+                    ? (long)prev.MaxHp - member.MaxHitPoints
+                    : 0L;
+                long effectiveDamage = Math.Max(0L, ((long)prev.Hp - member.HitPoints) - maxHpDrop);
+
                 if (_healWindows.TryGetValue(member.Id, out var window))
                 {
                     if (now > window.ExpiresAt)
                     {
                         _healWindows.Remove(member.Id);
                     }
-                    else if (damageTaken > window.PreHealHp && member.HitPoints > 0 && !member.IsDeadOrDown)
+                    else if (effectiveDamage > 0)
                     {
-                        savedNames.Add(member.Name);
-                        _healWindows.Remove(member.Id);
-                    }
-                    else if (member.HitPoints <= 0 || member.IsDeadOrDown)
-                    {
-                        _healWindows.Remove(member.Id);
+                        long totalDamage = window.CumulativeDamage + effectiveDamage;
+                        if (totalDamage > window.PreHealHp)
+                        {
+                            savedNames.Add(member.Name);
+                            _healWindows.Remove(member.Id);
+                        }
+                        else
+                        {
+                            _healWindows[member.Id] = window with { CumulativeDamage = totalDamage };
+                        }
                     }
                 }
             }
 
-            _previousHp[member.Id] = member.HitPoints;
+            _previous[member.Id] = new PrevHpState(member.HitPoints, member.MaxHitPoints);
         }
 
         return savedNames;

@@ -18,5 +18,5 @@ Stage 1 IL/metadata inspection against `C:\Users\hagay\AppData\Roaming\Dungeon H
 
 ## Evidence ledger
 
-- **Verified:** Stage 1 IL/metadata/keymap/SDK SHA-256 verification against DH `4.2.0.146` / `VoK.Sdk 4.2.1.0` and `AlchPlugin` reference patterns.
-- **Unverified at authoring time:** Live DDO gameplay integration, live Lossless Scaling capture backends (WGC and DXGI), and live GitHub-hosted Actions / release publication. Do not report live runtime or hosted CI as verified until actually executed and observed.
+- **Verified:** Stage 1 IL/metadata/keymap/SDK SHA-256 verification against DH `4.2.0.146` / `VoK.Sdk 4.2.1.0`, `AlchPlugin` reference patterns, local Windows/WSL Ubuntu 22.04 builds & tests, and live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`).
+- **Unverified at authoring time:** Live DDO gameplay integration and live Lossless Scaling capture backends (WGC and DXGI). Do not report live runtime gameplay or LS capture as verified until actually executed and observed.

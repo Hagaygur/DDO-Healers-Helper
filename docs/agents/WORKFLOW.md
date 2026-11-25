@@ -17,7 +17,7 @@ Human counterpart: [Operations](../human/OPERATIONS.md). Detailed CI reference: 
 - `ci/check_build_output.py`: validates Debug and Release output directories and ZIP contents on Windows and Linux.
 - `tests/ContractSnapshot.cs`: emits `dist/contracts.json` (`schema: 1`) after all C# behavioral assertions pass.
 - `ci/version.py` + `ci/test_version.py`: contract diff classification (`patch`/`minor`/`major`), `src/**/*.cs` release gating, conventional commit escalation, and same-commit draft retry.
-- `build.ps1`: stamps `src/AssemblyInfo.cs` and `src/VoK.HealersHelper.metadata` (only when changed, preserving LF and UTF-8 without BOM), runs Release build, verifies 3-entry ZIP, runs `HealersHelper.Tests`, and copies ZIP to `dist/`.
+- `build.ps1`: stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` (only when changed, preserving LF and UTF-8 without BOM), runs Release build, verifies 3-entry ZIP, runs `HealersHelper.Tests`, and copies ZIP to `dist/`.
 - `tests/WindowsSmoke/`: loads `VoK.HealersHelper.dll` directly from the Release ZIP, validates `IDdoPlugin` contract, synthetic 720px toolbar / minimum-size dialog layout (no clipping), and native layered banner surface / window styles. Does not attach to DDO or emulate LS.
 - `ci/package.py`: validates plugin ZIP and builds separate `HealersHelper-<version>-source.zip` + `dist/SHA256SUMS.txt`.
 - `ci/release.py`: verifies tag ownership, uploads draft assets, and publishes when `publish == true`.

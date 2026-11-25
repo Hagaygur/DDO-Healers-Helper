@@ -15,7 +15,7 @@ internal static class Program
 
     private static void Main(string[] args)
     {
-        TestPartyThresholdAndPrioritization();
+        TestPartyThresholdPrioritizationAndTieBreaking();
         TestRecoveryHysteresis();
         TestDeadAndIncapacitatedTimeoutAndSuppression();
         TestSinglePlayerAndSoloAndOffAndMasterToggle();
@@ -31,7 +31,7 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--contracts") ContractSnapshot.Write(args[1]);
     }
 
-    private static void TestPartyThresholdAndPrioritization()
+    private static void TestPartyThresholdPrioritizationAndTieBreaking()
     {
         var state = new HealerState();
         var settings = new Settings { HpThresholdPercent = 50, RecoveryHysteresisPercent = 3 };
@@ -51,11 +51,48 @@ internal static class Program
             new WatchedMemberSnapshot(3, "Bob", 40, 200, 2, true, false)     // 20%
         };
         var lowView = state.Evaluate(twoLow, settings, 2.0);
+        long gen1 = lowView.AlertGeneration;
         Assert(lowView.Severity == BannerSeverity.LowHp, "low HP member triggers LowHp severity");
         Assert(lowView.AlertPlayerId == 3 && lowView.AlertPlayerName == "Bob", "lowest HP percent member prioritized");
         Assert(lowView.LowMemberCount == 2, "LowMemberCount counts all active low members");
         Assert(lowView.PrimaryText == "HEAL Bob (20%)", "exact primary percent formatting");
         Assert(lowView.SecondaryText == "40/200 HP • 2 low", "secondary text includes HP ratio and low count");
+
+        // Same alert player & severity on next tick preserves AlertGeneration; target change increments it.
+        Assert(state.Evaluate(twoLow, settings, 2.2).AlertGeneration == gen1, "AlertGeneration unchanged across ticks of same alert");
+        var switchedLow = new[]
+        {
+            new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false),
+            new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false),  // 10%
+            new WatchedMemberSnapshot(3, "Bob", 40, 200, 2, true, false)     // 20%
+        };
+        long gen2 = state.Evaluate(switchedLow, settings, 2.4).AlertGeneration;
+        Assert(gen2 == gen1 + 1, "AlertGeneration increments when prioritized low player changes");
+
+        // Equal-HP% tie-breaking: PartySlotIndex 0 (Self) beats slot 1, then lower Id wins.
+        var tieSelfVsParty = new[]
+        {
+            new WatchedMemberSnapshot(10, "Alice", 60, 200, 1, true, false),
+            new WatchedMemberSnapshot(20, "Self", 60, 200, 0, true, false)
+        };
+        Assert(state.Evaluate(tieSelfVsParty, settings, 2.6).AlertPlayerId == 20, "equal HP% tie breaks by lower PartySlotIndex");
+
+        var tieSameSlot = new[]
+        {
+            new WatchedMemberSnapshot(55, "CloneB", 60, 200, 1, true, false),
+            new WatchedMemberSnapshot(12, "CloneA", 60, 200, 1, true, false)
+        };
+        Assert(state.Evaluate(tieSameSlot, settings, 2.8).AlertPlayerId == 12, "equal HP% and slot tie breaks by lower Id");
+
+        // Null entry and duplicate ID resilience in Evaluate.
+        var withNullAndDup = new WatchedMemberSnapshot[]
+        {
+            null!,
+            new(2, "Alice", 50, 200, 1, true, false),
+            new(2, "Alice", 50, 200, 1, true, false)
+        };
+        var dedupView = state.Evaluate(withNullAndDup, settings, 2.9);
+        Assert(dedupView.LowMemberCount == 1 && dedupView.AlertPlayerId == 2, "Evaluate ignores null entries and deduplicates member IDs");
 
         // Disconnected member is ignored even with low HP.
         var offline = new[]
@@ -110,6 +147,12 @@ internal static class Program
         var tankDownAgain = new[] { new WatchedMemberSnapshot(2, "Tank", -3, 200, 1, true, true) };
         Assert(state.Evaluate(tankDownAgain, settings, 122.0).Severity == BannerSeverity.CriticalDown, "member dying again after raise alerts again");
 
+        // MaxHitPoints == 0 with IsDeadOrDown == true formats fallback secondary detail.
+        var noMaxDown = new[] { new WatchedMemberSnapshot(9, "Ghost", 0, 0, 1, true, true) };
+        var noMaxView = new HealerState().Evaluate(noMaxDown, settings, 10.0);
+        Assert(noMaxView.Severity == BannerSeverity.CriticalDown && noMaxView.SecondaryText.Contains("Incapacitated / Dead"),
+            "IsDeadOrDown with MaxHitPoints==0 formats Incapacitated / Dead");
+
         var zeroState = new HealerState();
         var zeroSettings = new Settings { DeadAlertSeconds = 0 };
         Assert(zeroState.Evaluate(tankDownAgain, zeroSettings, 10.0).Severity == BannerSeverity.None, "DeadAlertSeconds = 0 suppresses dead alert immediately");
@@ -142,6 +185,8 @@ internal static class Program
         Assert(offView.Severity == BannerSeverity.None && offView.StatusLine == "Tracking Off", "Off mode stays silent");
 
         state.SetNotice("MODE: PARTY", "Watching self and party/raid", 2.0, 5.0);
+        // Active LowHp alert always overrides an active Notice.
+        Assert(state.Evaluate(solo, partyMode, 5.2).Severity == BannerSeverity.LowHp, "active LowHp alert overrides active Notice");
         var notice = state.Evaluate(new[] { new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false) }, partyMode, 5.5);
         Assert(notice.Severity == BannerSeverity.Notice && notice.PrimaryText == "MODE: PARTY", "Notice surfaces while idle");
         var expiredNotice = state.Evaluate(new[] { new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false) }, partyMode, 7.5);
@@ -179,38 +224,71 @@ internal static class Program
         var sChain = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 60, 200, 1, true, false) }, true, false, 25.5, 20.5);
         Assert(sChain.Count == 1, "chained heals preserve lowest PreHealHp floor and extend 5s window");
 
-        // 5. Window expires after 5.0s: damage at +5.1s does not count.
+        // 5. Exact boundary: damageTaken == PreHealHp does not count; cumulative +1 on next tick DOES count (multi-hit across ticks)!
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 26.0, 25.8);
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 26.5, 26.2); // PreHealHp = 20
+        Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 80, 200, 1, true, false) }, true, false, 27.0, 26.2).Count == 0,
+            "damageTaken == PreHealHp (20 == 20) does not count save yet");
+        Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 79, 200, 1, true, false) }, true, false, 27.2, 26.2).Count == 1,
+            "cumulative multi-hit damage across ticks (20 + 1 > 20) counts save");
+
+        // 6. Window expires after 5.0s: damage at +5.1s does not count.
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 30.0, 29.0);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 31.0, 30.5);
         var sExpired = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 36.1, 30.5);
         Assert(sExpired.Count == 0, "expired heal window (> 5.0s) does not count save");
 
-        // 6. Player dying from the hit (HitPoints <= 0) does NOT count and clears window.
+        // 7. Player dying from the hit (HitPoints <= 0 or IsDeadOrDown with HP > 0) does NOT count and clears window.
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 40.0, 39.5);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 41.0, 40.0);
         var sDied = tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", -5, 200, 1, true, true) }, true, false, 42.0, 40.0);
         Assert(sDied.Count == 0, "lethal hit leaving HP <= 0 does not count save");
 
-        // 7. Guards: no recent self-cast (> 3.5s) and tiny regen (< 5 HP) do not open heal window.
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 43.0, 42.8);
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 100, 200, 1, true, false) }, true, false, 43.5, 43.2);
+        Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 10, 200, 1, true, true) }, true, false, 44.0, 43.2).Count == 0,
+            "IsDeadOrDown == true even with HitPoints > 0 rejects save and clears window");
+
+        // 8. MaxHP gear/buff swap & Rage expiration do NOT trigger false heal windows or false saves!
+        var gearTracker = new PeopleSavedTracker();
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1000, 1000, 1, true, false) }, true, false, 10.0, 9.9);
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 10.5, 10.4); // pure +400 MaxHP swap
+        Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 300, 1400, 1, true, false) }, true, false, 11.0, 10.4).Count == 0,
+            "pure MaxHP gear/buff increase does not open a clutch heal window");
+
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 150, 1400, 1, true, false) }, true, false, 20.0, 19.9);
+        gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1400, 1400, 1, true, false) }, true, false, 20.5, 20.4); // real heal (PreHealHp = 150)
+        Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 1000, 1000, 1, true, false) }, true, false, 21.0, 20.4).Count == 0,
+            "Rage/CON MaxHP drop (1400/1400 -> 1000/1000) does not falsely count as enemy damage save");
+        Assert(gearTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Barb", 800, 1000, 1, true, false) }, true, false, 22.0, 20.4).Count == 1,
+            "real 200 damage after Rage drop still counts against active 150 PreHealHp window");
+
+        // 9. Extreme negative HP (`int.MinValue`) does not overflow 32-bit signed math.
+        var overflowTracker = new PeopleSavedTracker();
+        overflowTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Tank", int.MinValue, 500, 1, true, true) }, true, false, 1.0, 0.9);
+        Assert(overflowTracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Tank", 250, 500, 1, true, false) }, true, false, 1.5, 1.4).Count == 0,
+            "extreme int.MinValue recovery does not overflow signed int delta");
+
+        // 10. Guards: no recent self-cast (> 3.5s), tiny regen (< 5 HP), town clearing active window, and master-off.
+        tracker.Reset();
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 50.0, 40.0);
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 51.0, 40.0); // stale cast
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false) }, true, false, 51.0, 40.0);
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 30, 200, 1, true, false) }, true, false, 52.0, 40.0).Count == 0,
             "heal without recent self cast (> 3.5s) does not open heal window");
 
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 34, 200, 1, true, false) }, true, false, 60.0, 59.8); // +4 < MinHealDelta(5)
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 34, 200, 1, true, false) }, true, false, 60.0, 59.8);
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 10, 200, 1, true, false) }, true, false, 61.0, 59.8).Count == 0,
             "regen < MinHealDelta (5) does not open heal window");
 
-        // 8. Town guard ignores heals and hits while InTown() == true.
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, true, 70.0, 69.9);
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, true, 71.0, 70.9);
-        Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 72.0, 70.9).Count == 0,
-            "heals in town do not open heal window");
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 70.0, 69.9);
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, false, 70.5, 70.4); // open window
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, true, 71.0, 70.4);  // entered town -> clears window
+        Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 72.0, 70.4).Count == 0,
+            "entering town clears active heal window");
 
-        // 9. Master-off clears active heal windows.
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 15, 200, 1, true, false) }, true, false, 80.0, 79.5);
         tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, true, false, 81.0, 80.5);
-        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, false, false, 81.5, 80.5); // toggled OFF
+        tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 150, 200, 1, true, false) }, false, false, 81.5, 80.5);
         Assert(tracker.ProcessScan(new[] { new WatchedMemberSnapshot(2, "Alice", 20, 200, 1, true, false) }, true, false, 82.0, 80.5).Count == 0,
             "turning plugin OFF clears active PeopleSaved heal windows");
     }
@@ -227,12 +305,19 @@ internal static class Program
         Assert(focus.Format() == "Ctrl+Shift+H", "Ctrl+Shift+H format");
         Assert(toggle.Format() == "Ctrl+Shift+J", "Ctrl+Shift+J format");
         Assert(critical.Format() == "Ctrl+Shift+T", "Ctrl+Shift+T format");
+        Assert(new HotkeyBinding(0x70, false, false, true).Format() == "Alt+F1"
+               && new HotkeyBinding(0x7B, true, false, false).Format() == "Ctrl+F12"
+               && new HotkeyBinding(0x35, true, false, false).Format() == "Ctrl+5"
+               && new HotkeyBinding(0x63, false, true, false).Format() == "Shift+Num3",
+            "Format supports function keys, digits, and numpad keys");
         Assert(HotkeyBinding.Empty.Format() == "None", "Empty hotkey formats as None");
 
         Assert(HotkeyMatcher.Matches(focus, 0x48, true, true, false), "exact chord matches");
         Assert(!HotkeyMatcher.Matches(focus, 0x48, true, false, false), "missing Shift modifier rejected");
         Assert(!HotkeyMatcher.Matches(focus, 0x48, true, true, true), "extra Alt modifier rejected");
         Assert(!HotkeyMatcher.Matches(HotkeyBinding.Empty, 0x48, true, true, false), "empty binding never matches");
+        Assert(HotkeyMatcher.IsModifierKey(0x11) && HotkeyMatcher.IsModifierKey(0x5B) && !HotkeyMatcher.Matches(new HotkeyBinding(0x11, true, false, false), 0x11, true, false, false),
+            "modifier and Win virtual keys rejected");
 
         Assert(matcher.ShouldTrigger(togglePlugin, 0x4B, true, true, false, 10.0), "first TogglePlugin hotkey trigger succeeds");
         Assert(!matcher.ShouldTrigger(togglePlugin, 0x4B, true, true, false, 10.10), "duplicate trigger within 250ms deduplicated");
@@ -242,6 +327,12 @@ internal static class Program
         Assert(!matcher.UpdatePollKeyState(0x48, true), "held key in poll does not re-fire");
         Assert(!matcher.UpdatePollKeyState(0x48, false), "key release clears held state");
         Assert(matcher.UpdatePollKeyState(0x48, true), "pressing again after release triggers rising edge");
+
+        // SDK auto-repeat suppression while key remains down across > 250ms.
+        Assert(matcher.UpdateSdkKeyState(0x4B, true), "SDK KeyDown rising edge accepted");
+        Assert(!matcher.UpdateSdkKeyState(0x4B, true), "SDK auto-repeat while held suppressed");
+        matcher.ReleaseSdkKey(0x4B);
+        Assert(matcher.UpdateSdkKeyState(0x4B, true), "SDK KeyUp allows subsequent press");
     }
 
     private static void TestTargetPolicyRules()
@@ -249,8 +340,10 @@ internal static class Program
         Assert(TargetPolicy.PartyActionForSlot(0) == "TARGET_SELF_KEY", "slot 0 maps to TARGET_SELF_KEY");
         Assert(TargetPolicy.PartyActionForSlot(1) == "TARGET_FELLOW_1_KEY", "slot 1 maps to TARGET_FELLOW_1_KEY");
         Assert(TargetPolicy.PartyActionForSlot(12) == "TARGET_FELLOW_12_KEY", "slot 12 maps to TARGET_FELLOW_12_KEY");
-        Assert(TargetPolicy.PartyActionForSlot(13) is null, "slot > 12 has no party action");
+        Assert(TargetPolicy.PartyActionForSlot(13) is null && TargetPolicy.PartyActionForSlot(-1) is null, "slot -1 and > 12 have no party action");
 
+        Assert(TargetPolicy.Evaluate(42, "Alice", 1, true, true, 0, TargetMethod.Off, true, 0).Action == TargetActionKind.None,
+            "TargetMethod.Off always returns None");
         Assert(TargetPolicy.Evaluate(0, "Invalid", 1, true, true, 0, TargetMethod.Auto, true, 0).Action == TargetActionKind.None,
             "target ID 0 rejected");
         Assert(TargetPolicy.Evaluate(ulong.MaxValue, "Invalid", 1, true, true, 0, TargetMethod.Auto, true, 0).Action == TargetActionKind.None,
@@ -267,6 +360,9 @@ internal static class Program
             "Auto falls back to bound party keybind when entity out of range");
         Assert(TargetPolicy.Evaluate(42, "Alice", 7, false, false, 0, TargetMethod.PartyKeyOnly, true, 0).Action == TargetActionKind.None,
             "unbound party key slot rejected in PartyKeyOnly");
+        Assert(TargetPolicy.Evaluate(99, "Outsider", -1, false, true, 0, TargetMethod.PartyKeyOnly, true, 0).Action == TargetActionKind.None
+               && TargetPolicy.Evaluate(99, "Outsider", -1, false, true, 0, TargetMethod.Auto, true, 0).Action == TargetActionKind.None,
+            "external focused player (slot -1) out of range has no party key fallback");
     }
 
     private static void TestSettingsValidationPersistenceAndFonts()
@@ -286,7 +382,9 @@ internal static class Program
             StatusHudX = -1.0,
             StatusHudY = double.NaN,
             PeopleSaved = -7,
-            AutoTargetCooldownSeconds = double.PositiveInfinity
+            AutoTargetCooldownSeconds = double.PositiveInfinity,
+            FocusTargetHotkey = new HotkeyBinding(0xFFFF, true, false, false),
+            ToggleModeHotkey = new HotkeyBinding(0x11, true, false, false)
         };
         invalid.Validate();
         Assert(invalid.Mode == TrackingMode.Party && invalid.TargetingMethod == TargetMethod.Auto, "invalid enums reset to defaults");
@@ -295,6 +393,8 @@ internal static class Program
         Assert(invalid.HudX == 0.50 && invalid.HudY == 1.0 && invalid.AutoTargetCooldownSeconds == 3.0, "HudX, HudY, and cooldown clamped/sanitized");
         Assert(invalid.StatusFontSizePixels == 9 && invalid.StatusHudX == 0.0 && invalid.StatusHudY == 0.76 && invalid.PeopleSaved == 0,
             "StatusFontSizePixels, StatusHudX, StatusHudY, and PeopleSaved clamped/sanitized");
+        Assert(invalid.FocusTargetHotkey.IsEmpty && invalid.ToggleModeHotkey.IsEmpty,
+            "NormalizeHotkey clears out-of-range (>0xFE) and modifier-only VKs");
 
         foreach (int px in new[] { 18, 56, 140 })
             Assert(SettingsInput.TryFontSize(px.ToString(), out int parsed) && parsed == px, $"exact integer font size {px}px accepted");

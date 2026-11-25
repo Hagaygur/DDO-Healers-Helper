@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using VoK.Sdk;
 using VoK.Sdk.Ddo;
 using VoK.Sdk.Plugins;
@@ -20,15 +21,21 @@ public sealed class HealersHelperPlugin : IDdoPlugin
     private HealersHelperUi? _ui;
     private BannerHudController? _hud;
 
-    internal IHealerEngineView? Engine => _engine;
-    internal BannerHudController? Hud => _hud;
+    internal IHealerEngineView? Engine => Volatile.Read(ref _engine);
+    internal BannerHudController? Hud => Volatile.Read(ref _hud);
 
-    public IPluginUI GetPluginUI() => _ui ??= new HealersHelperUi(this);
+    public IPluginUI GetPluginUI()
+    {
+        var existing = Volatile.Read(ref _ui);
+        if (existing is not null) return existing;
+        var created = new HealersHelperUi(this);
+        return Interlocked.CompareExchange(ref _ui, created, null) ?? created;
+    }
 
     public void Initialize(IDdoGameDataProvider gameDataProvider, string folder)
     {
-        _hud?.Dispose();
-        _engine?.Dispose();
+        Interlocked.Exchange(ref _hud, null)?.Dispose();
+        Interlocked.Exchange(ref _engine, null)?.Dispose();
 
         if (string.IsNullOrWhiteSpace(folder))
         {
@@ -38,17 +45,16 @@ public sealed class HealersHelperPlugin : IDdoPlugin
                 "HealersHelper");
         }
 
-        _engine = new HealerEngine(gameDataProvider, folder);
-        _hud = new BannerHudController(_engine);
+        var engine = new HealerEngine(gameDataProvider, folder);
+        var hud = new BannerHudController(engine);
+        Volatile.Write(ref _engine, engine);
+        Volatile.Write(ref _hud, hud);
     }
 
     public void Terminate()
     {
-        _hud?.Dispose();
-        _hud = null;
-        _engine?.Dispose();
-        _engine = null;
-        _ui?.Dispose();
-        _ui = null;
+        Interlocked.Exchange(ref _hud, null)?.Dispose();
+        Interlocked.Exchange(ref _engine, null)?.Dispose();
+        Interlocked.Exchange(ref _ui, null)?.Dispose();
     }
 }

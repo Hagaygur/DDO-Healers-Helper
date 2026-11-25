@@ -16,7 +16,7 @@ source = Path(f'dist/HealersHelper-{version}-source.zip')
 with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as archive:
     for directory in ('src', 'tests', 'ci', '.github', '.vscode', 'docs'):
         for path in sorted(Path(directory).rglob('*')):
-            if path.is_file() and not set(path.parts) & {'bin', 'obj', '__pycache__'}:
+            if path.is_file() and not set(path.parts) & {'bin', 'obj', '__pycache__'} and path.suffix not in {'.pyc', '.user'}:
                 archive.write(path, path.as_posix())
     for name in ('README.md', 'INSTALL.txt', 'GITHUB.md', 'AGENTS.md', 'LICENSE.txt', 'build.ps1', '.gitignore', 'HealersHelper.sln', 'global.json', '.vsconfig', '.editorconfig', '.gitattributes'):
         archive.write(name, name)

@@ -225,6 +225,24 @@ class CodeReleaseTests(unittest.TestCase):
         )
         self.assertIn('Build only', result.stdout)
 
+    def test_package_allowlist_covers_tracked_repository_files(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        if not (repo_root / '.git').exists():
+            return
+        tracked = set(
+            subprocess.check_output(['git', 'ls-files'], cwd=repo_root, text=True).splitlines()
+        )
+        packaged = set()
+        for directory in ('src', 'tests', 'ci', '.github', '.vscode', 'docs'):
+            for path in (repo_root / directory).rglob('*'):
+                rel = path.relative_to(repo_root)
+                if path.is_file() and not set(rel.parts) & {'bin', 'obj', '__pycache__'} and path.suffix not in {'.pyc', '.user'}:
+                    packaged.add(rel.as_posix())
+        for name in ('README.md', 'INSTALL.txt', 'GITHUB.md', 'AGENTS.md', 'LICENSE.txt', 'build.ps1', '.gitignore', 'HealersHelper.sln', 'global.json', '.vsconfig', '.editorconfig', '.gitattributes'):
+            if (repo_root / name).is_file():
+                packaged.add(name)
+        self.assertTrue(tracked.issubset(packaged), f'Tracked files missing from package.py allowlist: {sorted(tracked - packaged)}')
+
 
 if __name__ == '__main__':
     unittest.main()

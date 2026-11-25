@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Windows.Forms;
@@ -7,8 +8,12 @@ namespace VoK.HealersHelper;
 
 internal sealed class SettingsDialog : Form
 {
+    private sealed record HotkeyEntry(TextBox Box, string ActionName, Func<HotkeyBinding> Getter, Action<HotkeyBinding> Setter);
+
     private readonly IHealerEngineView _engine;
     private readonly Settings _settings;
+    private readonly Font _dialogFont = new("Segoe UI", 9);
+    private readonly List<HotkeyEntry> _hotkeyEntries = new(4);
 
     private readonly CheckBox _pluginEnabled = new() { Name = "PluginEnabledCheckBox", Text = "Plugin enabled (master switch)", AutoSize = true };
     private readonly ComboBox _mode = new() { Name = "ModeCombo", DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
@@ -19,7 +24,7 @@ internal sealed class SettingsDialog : Form
     private readonly NumericUpDown _flashInterval = new() { Name = "FlashIntervalNumeric", Minimum = 100, Maximum = 1000, Increment = 25, Width = 70 };
     private readonly CheckBox _hudEnabled = new() { Name = "HudEnabledCheckBox", Text = "HUD banner enabled", AutoSize = true };
     private readonly CheckBox _statusHudEnabled = new() { Name = "StatusHudEnabledCheckBox", Text = "Status HUD enabled", AutoSize = true };
-    private readonly TextBox _statusFontSize = new() { Name = "StatusFontSizeTextBox", Width = 55, MaxLength = 2 };
+    private readonly TextBox _statusFontSize = new() { Name = "StatusFontSizeTextBox", Width = 55, MaxLength = 3 };
     private readonly CheckBox _soundOnAlert = new() { Name = "SoundOnAlertCheckBox", Text = "Sound on alert", AutoSize = true };
     private readonly CheckBox _excludeCapture = new() { Name = "ExcludeFromCaptureCheckBox", Text = "Exclude from capture (Lossless Scaling)", AutoSize = true };
 
@@ -32,7 +37,7 @@ internal sealed class SettingsDialog : Form
     private readonly TextBox _toggleHotkeyBox = new() { Name = "ToggleModeHotkeyBox", ReadOnly = true, Width = 145 };
     private readonly TextBox _criticalHotkeyBox = new() { Name = "TargetCriticalHotkeyBox", ReadOnly = true, Width = 145 };
 
-    private readonly Label _status = new() { AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(2, 6, 2, 6), ForeColor = Color.FromArgb(40, 75, 130) };
+    private readonly Label _status = new() { Name = "StatusLabel", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(2, 6, 2, 6), ForeColor = Color.FromArgb(40, 75, 130) };
 
     private HotkeyBinding _togglePluginHotkey;
     private HotkeyBinding _focusHotkey;
@@ -49,12 +54,13 @@ internal sealed class SettingsDialog : Form
         _criticalHotkey = _settings.TargetCriticalHotkey;
 
         Text = "DDO Healer's Helper — Settings";
+        Font = _dialogFont;
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Size = new Size(720, 620);
         MinimumSize = new Size(640, 560);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font("Segoe UI", 9);
 
         var root = new TableLayoutPanel
         {
@@ -179,7 +185,7 @@ internal sealed class SettingsDialog : Form
         root.Controls.Add(targetGroup, 0, 2);
 
         // Section 4: Global Hotkeys
-        var hotkeyGroup = CreateGroup("Hotkeys (click box and press desired key combo)");
+        var hotkeyGroup = CreateGroup("Hotkeys (click box and press desired key combo, Backspace clears, Esc cancels)");
         var hotkeyTable = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -229,6 +235,63 @@ internal sealed class SettingsDialog : Form
         Controls.Add(root);
     }
 
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (ActiveControl is TextBox activeBox)
+        {
+            HotkeyEntry? entry = null;
+            foreach (var candidate in _hotkeyEntries)
+            {
+                if (ReferenceEquals(candidate.Box, activeBox))
+                {
+                    entry = candidate;
+                    break;
+                }
+            }
+
+            if (entry is not null)
+            {
+                Keys keyCode = keyData & Keys.KeyCode;
+                Keys modifiers = keyData & Keys.Modifiers;
+
+                if (keyCode == Keys.Tab && (modifiers & (Keys.Control | Keys.Alt)) == 0)
+                {
+                    return base.ProcessCmdKey(ref msg, keyData);
+                }
+
+                if (keyCode == Keys.Escape)
+                {
+                    entry.Box.Text = entry.Getter().Format();
+                    SelectNextControl(entry.Box, true, true, true, true);
+                    return true;
+                }
+
+                if (keyCode == Keys.Back && modifiers == Keys.None)
+                {
+                    entry.Setter(HotkeyBinding.Empty);
+                    entry.Box.Text = HotkeyBinding.Empty.Format();
+                    return true;
+                }
+
+                if (IsModifierOrIgnoredKey(keyCode) || (int)keyCode > 0xFE)
+                {
+                    return true;
+                }
+
+                var updated = new HotkeyBinding(
+                    (int)keyCode,
+                    (modifiers & Keys.Control) != 0,
+                    (modifiers & Keys.Shift) != 0,
+                    (modifiers & Keys.Alt) != 0);
+                entry.Setter(updated);
+                entry.Box.Text = updated.Format();
+                return true;
+            }
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     private void SaveAndClose()
     {
         try
@@ -245,6 +308,20 @@ internal sealed class SettingsDialog : Form
                 _status.Text = "Status font size must be a whole number from 9 to 48 pixels. No changes saved.";
                 _statusFontSize.Focus();
                 return;
+            }
+
+            var seenHotkeys = new Dictionary<HotkeyBinding, string>(4);
+            foreach (var entry in _hotkeyEntries)
+            {
+                var binding = entry.Getter();
+                if (binding.IsEmpty) continue;
+                if (seenHotkeys.TryGetValue(binding, out string? existingAction))
+                {
+                    _status.Text = $"Duplicate hotkey '{binding.Format()}' assigned to both '{existingAction}' and '{entry.ActionName}'. No changes saved.";
+                    entry.Box.Focus();
+                    return;
+                }
+                seenHotkeys[binding] = entry.ActionName;
             }
 
             // Preserve HUD positions, focused player, and live PeopleSaved counter.
@@ -295,38 +372,20 @@ internal sealed class SettingsDialog : Form
         Func<HotkeyBinding> getter,
         Action<HotkeyBinding> setter)
     {
+        _hotkeyEntries.Add(new HotkeyEntry(box, labelText, getter, setter));
+
         var label = MakeFieldLabel(labelText);
         box.Text = getter().Format();
         box.Margin = new Padding(4, 4, 6, 4);
         box.GotFocus += (_, _) => box.Text = "Press keys...";
         box.LostFocus += (_, _) => box.Text = getter().Format();
-        box.KeyDown += (_, e) =>
-        {
-            e.SuppressKeyPress = true;
-            e.Handled = true;
-            if (e.KeyCode == Keys.Escape)
-            {
-                box.Text = getter().Format();
-                SelectNextControl(box, true, true, true, true);
-                return;
-            }
-
-            if (IsModifierOnly(e.KeyCode))
-            {
-                return;
-            }
-
-            var updated = new HotkeyBinding((int)e.KeyCode, e.Control, e.Shift, e.Alt);
-            setter(updated);
-            box.Text = updated.Format();
-        };
+        box.KeyPress += (_, e) => e.Handled = true;
 
         var clear = new Button { Text = "Clear", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
         clear.Click += (_, _) =>
         {
-            var cleared = new HotkeyBinding(0, false, false, false);
-            setter(cleared);
-            box.Text = cleared.Format();
+            setter(HotkeyBinding.Empty);
+            box.Text = HotkeyBinding.Empty.Format();
         };
 
         table.Controls.Add(label, 0, row);
@@ -334,7 +393,8 @@ internal sealed class SettingsDialog : Form
         table.Controls.Add(clear, 2, row);
     }
 
-    private static bool IsModifierOnly(Keys key) => key is
+    private static bool IsModifierOrIgnoredKey(Keys key) => key is
+        Keys.None or Keys.ProcessKey or Keys.Packet or Keys.Return or
         Keys.ControlKey or Keys.LControlKey or Keys.RControlKey or
         Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey or
         Keys.Menu or Keys.LMenu or Keys.RMenu or
@@ -364,4 +424,13 @@ internal sealed class SettingsDialog : Form
         AutoSize = true,
         Padding = new Padding(4, 6, 4, 0)
     };
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            _dialogFont.Dispose();
+        }
+    }
 }

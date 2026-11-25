@@ -52,8 +52,8 @@ Compiled against **VoK.Sdk 4.2.1.0**, matching Dungeon Helper 4.2.0.146's instal
 
 ## Verification status and limits
 
-- **Verified by IL/binary inspection:** Dungeon Helper 4.2.0.146 (`VoK.Sdk 4.2.1.0`) behavior for `GetPartyMembers()` (excludes self, cached getters, no 6/12 cap), `IEntity` (`HitPoints_Current`, `LifeState`), `SelectObject(ulong)` (MMF, no subscription check), `GetSelectedObjectId()` (`0` when unselected), `EventProvider.KeyDown` (`HotKeysEnabled`), and local `ddo.keymap` bindings.
-- **Unverified at authoring time:** Live DDO gameplay, live Lossless Scaling capture modes (WGC/DXGI), and live GitHub-hosted Actions execution. See [docs/human/OPERATIONS.md](docs/human/OPERATIONS.md) for the live verification checklist.
+- **Verified by IL/binary inspection & CI:** Dungeon Helper 4.2.0.146 (`VoK.Sdk 4.2.1.0`) behavior for `GetPartyMembers()` (excludes self, cached getters, no 6/12 cap), `IEntity` (`HitPoints_Current`, `LifeState`, `EntityExtensions.IsPlayer`), `SelectObject(ulong)` (MMF, no subscription check), `GetSelectedObjectId()` (`0` when unselected), `EventProvider.KeyDown`/`KeyUp` (`HotKeysEnabled`), local `ddo.keymap` bindings, and GitHub-hosted Actions (`linux` + `build` + `release`, verified on `v1.0.0`).
+- **Unverified at authoring time:** Live DDO gameplay and live Lossless Scaling capture modes (WGC/DXGI). See [docs/human/OPERATIONS.md](docs/human/OPERATIONS.md) for the live verification checklist.
 
 ## Building from source
 

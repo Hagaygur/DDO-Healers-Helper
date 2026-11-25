@@ -52,13 +52,25 @@ internal sealed class HealersHelperUi : IPluginUI, IDisposable
         {
             if (form.IsHandleCreated && form.InvokeRequired)
             {
-                try { form.BeginInvoke(new Action(form.Dispose)); } catch (InvalidOperationException) { }
+                try
+                {
+                    form.BeginInvoke(new Action(form.Dispose));
+                }
+                catch (Exception)
+                {
+                    if (!form.IsDisposed && !form.IsHandleCreated)
+                    {
+                        form.Dispose();
+                    }
+                }
             }
             else
             {
                 form.Dispose();
             }
         }
+        _icon?.Dispose();
+        _icon = null;
     }
 }
 
@@ -70,8 +82,9 @@ internal sealed class HealerControlForm : Form
     }
 
     private readonly HealersHelperPlugin _plugin;
-    private readonly Label _pluginStateLabel = new() { Name = "PluginStateLabel", Text = "Plugin: ON", AutoSize = true, Margin = new Padding(2, 2, 14, 2), Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), ForeColor = Color.FromArgb(122, 229, 130) };
-    private readonly Label _peopleSavedLabel = new() { Name = "PeopleSavedLabel", Text = "People Saved: 0", AutoSize = true, Margin = new Padding(2, 2, 2, 2), Font = new Font("Segoe UI", 9.5f, FontStyle.Bold), ForeColor = Color.FromArgb(122, 215, 255) };
+    private readonly Font _headerFont = new("Segoe UI", 9.5f, FontStyle.Bold);
+    private readonly Label _pluginStateLabel;
+    private readonly Label _peopleSavedLabel;
     private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 4, 2, 2) };
     private readonly Label _targetingLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(180, 210, 235) };
     private readonly ComboBox _modeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 115 };
@@ -86,6 +99,25 @@ internal sealed class HealerControlForm : Form
     public HealerControlForm(HealersHelperPlugin plugin)
     {
         _plugin = plugin;
+        _pluginStateLabel = new Label
+        {
+            Name = "PluginStateLabel",
+            Text = "Plugin: ON",
+            AutoSize = true,
+            Margin = new Padding(2, 2, 14, 2),
+            Font = _headerFont,
+            ForeColor = Color.FromArgb(122, 229, 130)
+        };
+        _peopleSavedLabel = new Label
+        {
+            Name = "PeopleSavedLabel",
+            Text = "People Saved: 0",
+            AutoSize = true,
+            Margin = new Padding(2, 2, 2, 2),
+            Font = _headerFont,
+            ForeColor = Color.FromArgb(122, 215, 255)
+        };
+
         Text = "DDO Healer's Helper controls";
         FormBorderStyle = FormBorderStyle.None;
         AutoScaleDimensions = new SizeF(96, 96);
@@ -226,6 +258,7 @@ internal sealed class HealerControlForm : Form
         _refresh.Tick += (_, _) => RefreshState();
         VisibleChanged += (_, _) =>
         {
+            if (IsDisposed || Disposing) return;
             _refresh.Enabled = Visible;
             if (Visible)
             {
@@ -263,7 +296,9 @@ internal sealed class HealerControlForm : Form
         }
 
         var s = engine.GetSettings();
-        if (s.FocusedPlayerId == choice.Id && string.Equals(s.FocusedPlayerName, choice.Name, StringComparison.Ordinal))
+        if (s.Mode == TrackingMode.SinglePlayer
+            && s.FocusedPlayerId == choice.Id
+            && string.Equals(s.FocusedPlayerName, choice.Name, StringComparison.Ordinal))
         {
             return;
         }
@@ -319,6 +354,8 @@ internal sealed class HealerControlForm : Form
 
     private void RefreshState()
     {
+        if (IsDisposed || Disposing) return;
+
         var engine = _plugin.Engine;
         if (engine is null)
         {
@@ -397,20 +434,25 @@ internal sealed class HealerControlForm : Form
                 _lastPlayerSignature = playerSig;
             }
 
-            for (int i = 0; i < _playerCombo.Items.Count; i++)
+            int matchedIndex = -1;
+            if (settings.Mode == TrackingMode.SinglePlayer)
             {
-                if (_playerCombo.Items[i] is PlayerChoice c &&
-                    ((settings.FocusedPlayerId != 0 && c.Id == settings.FocusedPlayerId) ||
-                     (!string.IsNullOrWhiteSpace(settings.FocusedPlayerName) &&
-                      string.Equals(c.Name, settings.FocusedPlayerName, StringComparison.OrdinalIgnoreCase))))
+                for (int i = 0; i < _playerCombo.Items.Count; i++)
                 {
-                    if (_playerCombo.SelectedIndex != i)
+                    if (_playerCombo.Items[i] is PlayerChoice c &&
+                        ((settings.FocusedPlayerId != 0 && c.Id == settings.FocusedPlayerId) ||
+                         (!string.IsNullOrWhiteSpace(settings.FocusedPlayerName) &&
+                          string.Equals(c.Name, settings.FocusedPlayerName, StringComparison.OrdinalIgnoreCase))))
                     {
-                        _playerCombo.SelectedIndex = i;
+                        matchedIndex = i;
+                        break;
                     }
-
-                    break;
                 }
+            }
+
+            if (_playerCombo.SelectedIndex != matchedIndex)
+            {
+                _playerCombo.SelectedIndex = matchedIndex;
             }
         }
         finally
@@ -474,5 +516,9 @@ internal sealed class HealerControlForm : Form
         }
 
         base.Dispose(disposing);
+        if (disposing)
+        {
+            _headerFont.Dispose();
+        }
     }
 }

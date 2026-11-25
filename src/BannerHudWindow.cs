@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Media;
 using System.Windows.Forms;
 
 namespace VoK.HealersHelper;
@@ -29,7 +28,6 @@ internal sealed class BannerHudWindow : Form
     private double _nextScreenCheck;
     private double _lastMove;
     private double _lastErrorLog = -100;
-    private long _lastSoundGeneration = -1;
     private long _alertGeneration = -1;
     private BannerSeverity _alertSeverity = BannerSeverity.None;
     private bool _editing;
@@ -39,12 +37,14 @@ internal sealed class BannerHudWindow : Form
     private string _captureStatus = "Capture exclusion not checked";
     private string _lastRenderKey = "";
     private Rectangle _screen;
+    private IntPtr _lastGameWindow;
     private IntPtr _foreground;
     private bool _foregroundAllowed;
-    private readonly uint _gamePid;
+    private uint _gamePid;
 
     internal HudSurface Surface => _surface;
     internal BannerFrame LastFrame { get; private set; }
+    internal bool AllowClose { get; set; }
 
     public BannerHudWindow(IHealerEngineView engine, ConcurrentQueue<HudCommand> _ignoredCommands, Action<string> status)
     {
@@ -63,12 +63,8 @@ internal sealed class BannerHudWindow : Form
 
         try
         {
-            if (_engine.GameWindow != IntPtr.Zero)
-            {
-                NativeHud.GetWindowThreadProcessId(_engine.GameWindow, out _gamePid);
-            }
-
-            _screen = HudHostHelper.GetTargetScreenBounds(_engine.GameWindow);
+            RefreshGameWindowBinding();
+            _screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
             _ = Handle; // Top-level HWND outside Dungeon Helper's panel host.
         }
         catch
@@ -85,7 +81,11 @@ internal sealed class BannerHudWindow : Form
         get
         {
             var p = base.CreateParams;
-            p.ExStyle |= NativeHud.Layered | NativeHud.Transparent | NativeHud.NoActivate | NativeHud.ToolWindow;
+            p.ExStyle |= NativeHud.Layered | NativeHud.NoActivate | NativeHud.ToolWindow;
+            if (!_editing)
+            {
+                p.ExStyle |= NativeHud.Transparent;
+            }
             return p;
         }
     }
@@ -93,7 +93,20 @@ internal sealed class BannerHudWindow : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        _lastRenderKey = "";
+        _needsPosition = true;
+        HudHostHelper.SetClickThrough(Handle, !_editing);
         ApplyCaptureExclusion(_settings.ExcludeFromCapture);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!AllowClose && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            return;
+        }
+        base.OnFormClosing(e);
     }
 
     protected override void OnPaint(PaintEventArgs e) { }
@@ -130,10 +143,36 @@ internal sealed class BannerHudWindow : Form
     internal void BeginPreview() => _previewStart = NowSeconds();
     internal void BeginMove() => _editUntil = NowSeconds() + EditDurationSeconds;
 
+    internal void FlushPositionIfDirty()
+    {
+        if (!_positionDirty) return;
+        double x = Math.Clamp((Left - _screen.Left) / (double)Math.Max(1, _screen.Width - Width), 0.0, 1.0);
+        double y = Math.Clamp((Top - _screen.Top) / (double)Math.Max(1, _screen.Height - Height), 0.0, 1.0);
+        _positionDirty = false;
+        _settings.HudX = x;
+        _settings.HudY = y;
+        _engine.SavePosition(x, y);
+    }
+
     internal void RenderForSmoke(BannerFrame frame, bool forceReposition = false)
     {
-        _screen = HudHostHelper.GetTargetScreenBounds(_engine.GameWindow);
+        RefreshGameWindowBinding();
+        _screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
         RenderFrame(frame, forceReposition || _needsPosition);
+    }
+
+    private void RefreshGameWindowBinding()
+    {
+        IntPtr gw = _engine.GameWindow;
+        if (gw != _lastGameWindow)
+        {
+            _lastGameWindow = gw;
+            _foreground = IntPtr.Zero;
+            if (gw != IntPtr.Zero)
+                NativeHud.GetWindowThreadProcessId(gw, out _gamePid);
+            else
+                _gamePid = 0;
+        }
     }
 
     private void ApplyCaptureExclusion(bool exclude)
@@ -146,30 +185,17 @@ internal sealed class BannerHudWindow : Form
 
     internal void TickFrame(double now)
     {
+        if (IsDisposed || Disposing) return;
+
         try
         {
-            if (_positionDirty && now - _lastMove > 0.5)
-            {
-                double x = (Left - _screen.Left) / (double)Math.Max(1, _screen.Width - Width);
-                double y = (Top - _screen.Top) / (double)Math.Max(1, _screen.Height - Height);
-                _engine.SavePosition(Math.Clamp(x, 0.0, 1.0), Math.Clamp(y, 0.0, 1.0));
-                _positionDirty = false;
-            }
-
-            int revision = _engine.SettingsRevision;
-            if (revision != _revision)
-            {
-                _settings = _engine.GetSettings();
-                _revision = revision;
-                _lastRenderKey = "";
-                _needsPosition = true;
-                if (IsHandleCreated && _settings.ExcludeFromCapture != _appliedExcludeFromCapture)
-                {
-                    ApplyCaptureExclusion(_settings.ExcludeFromCapture);
-                }
-            }
-
+            RefreshGameWindowBinding();
             bool editing = now < _editUntil;
+            if (_positionDirty && (!editing || now - _lastMove > 0.5))
+            {
+                FlushPositionIfDirty();
+            }
+
             if (editing != _editing)
             {
                 _editing = editing;
@@ -180,13 +206,32 @@ internal sealed class BannerHudWindow : Form
                 }
             }
 
+            int revision = _engine.SettingsRevision;
+            if (revision != _revision)
+            {
+                _settings = _engine.GetSettings();
+                _revision = revision;
+                _lastRenderKey = "";
+                if (!_editing && !_positionDirty)
+                {
+                    _needsPosition = true;
+                }
+                if (IsHandleCreated && _settings.ExcludeFromCapture != _appliedExcludeFromCapture)
+                {
+                    ApplyCaptureExclusion(_settings.ExcludeFromCapture);
+                }
+            }
+
             if (now >= _nextScreenCheck)
             {
-                var screen = HudHostHelper.GetTargetScreenBounds(_engine.GameWindow);
+                var screen = HudHostHelper.GetTargetScreenBounds(_lastGameWindow);
                 if (screen != _screen)
                 {
                     _screen = screen;
-                    _needsPosition = true;
+                    if (!_editing && !_positionDirty)
+                    {
+                        _needsPosition = true;
+                    }
                 }
 
                 _nextScreenCheck = now + 1.0;
@@ -210,7 +255,7 @@ internal sealed class BannerHudWindow : Form
                 _alertGeneration = live.AlertGeneration;
             }
 
-            bool foreground = HudHostHelper.ForegroundAllowed(_engine.GameWindow, _gamePid, ref _foreground, ref _foregroundAllowed);
+            bool foreground = HudHostHelper.ForegroundAllowed(_lastGameWindow, _gamePid, ref _foreground, ref _foregroundAllowed);
             double elapsedAlert = demo ? Math.Max(0.0, now - _previewStart) : Math.Max(0.0, now - _alertStart);
             double editRemaining = editing ? Math.Max(0.0, _editUntil - now) : 0.0;
             var frame = BannerPresentation.Compute(live, _settings, demo, editing, elapsedAlert, editRemaining);
@@ -218,13 +263,6 @@ internal sealed class BannerHudWindow : Form
             bool modeAllowsLive = _settings.PluginEnabled && _settings.HudEnabled && live.Mode != TrackingMode.Off;
             bool display = frame.Visible && (demo || editing || (modeAllowsLive && foreground));
 
-            if (display && !demo && _settings.PluginEnabled && _lastSoundGeneration >= 0 && live.AlertGeneration > _lastSoundGeneration &&
-                _settings.SoundOnAlert && live.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown)
-            {
-                SystemSounds.Exclamation.Play();
-            }
-
-            _lastSoundGeneration = live.AlertGeneration;
             _status(_captureStatus + (editing ? " • drag banner now" : display ? " • HUD visible" : " • HUD hidden"));
 
             if (!display)
@@ -302,16 +340,16 @@ internal sealed class BannerHudWindow : Form
         }
 
         GraphicsPath? secondaryPath = null;
-        RectangleF secondaryBounds = RectangleF.Empty;
-        if (hasSecondary)
-        {
-            secondaryPath = new GraphicsPath();
-            secondaryPath.AddString(secondaryText, _family, (int)FontStyle.Bold, secondaryPixels, PointF.Empty, StringFormat.GenericTypographic);
-            secondaryBounds = secondaryPath.GetBounds();
-        }
-
         try
         {
+            RectangleF secondaryBounds = RectangleF.Empty;
+            if (hasSecondary)
+            {
+                secondaryPath = new GraphicsPath();
+                secondaryPath.AddString(secondaryText, _family, (int)FontStyle.Bold, secondaryPixels, PointF.Empty, StringFormat.GenericTypographic);
+                secondaryBounds = secondaryPath.GetBounds();
+            }
+
             const int padX = 28;
             const int padY = 16;
             const int lineGap = 8;

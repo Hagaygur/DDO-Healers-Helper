@@ -34,10 +34,23 @@ internal sealed class BannerHudController : IDisposable
 
     private void Run()
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
         try
         {
             using var banner = new BannerHudWindow(_engine, _commands, s => Volatile.Write(ref _status, s));
             using var statusHud = new StatusHudWindow(_engine);
+
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                banner.AllowClose = true;
+                statusHud.AllowClose = true;
+                return;
+            }
+
             using var tick = new System.Windows.Forms.Timer { Interval = 85 };
 
             tick.Tick += (_, _) =>
@@ -48,6 +61,10 @@ internal sealed class BannerHudController : IDisposable
                     if (command == HudCommand.Stop)
                     {
                         tick.Stop();
+                        try { banner.FlushPositionIfDirty(); } catch { }
+                        try { statusHud.FlushPositionIfDirty(); } catch { }
+                        banner.AllowClose = true;
+                        statusHud.AllowClose = true;
                         banner.Hide();
                         statusHud.Hide();
                         Application.ExitThread();
@@ -84,7 +101,7 @@ internal sealed class BannerHudController : IDisposable
 
     internal void Preview()
     {
-        if (_disposed == 0)
+        if (Volatile.Read(ref _disposed) == 0)
         {
             _commands.Enqueue(HudCommand.Preview);
         }
@@ -92,7 +109,7 @@ internal sealed class BannerHudController : IDisposable
 
     internal void Move()
     {
-        if (_disposed == 0)
+        if (Volatile.Read(ref _disposed) == 0)
         {
             _commands.Enqueue(HudCommand.Move);
         }
@@ -100,7 +117,7 @@ internal sealed class BannerHudController : IDisposable
 
     internal void MoveStatus()
     {
-        if (_disposed == 0)
+        if (Volatile.Read(ref _disposed) == 0)
         {
             _commands.Enqueue(HudCommand.MoveStatus);
         }

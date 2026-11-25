@@ -194,16 +194,17 @@ internal static class HudHostHelper
 
         cachedForeground = current;
         NativeHud.GetWindowThreadProcessId(current, out uint pid);
-        cachedAllowed = pid != 0 && (pid == gamePid || pid == Environment.ProcessId);
-        if (!cachedAllowed && pid != 0)
+        cachedAllowed = pid != 0 && (pid == gamePid || pid == (uint)Environment.ProcessId);
+        if (!cachedAllowed && pid != 0 && pid <= int.MaxValue)
         {
             try
             {
-                using var process = Process.GetProcessById(checked((int)pid));
+                using var process = Process.GetProcessById((int)pid);
                 cachedAllowed = process.ProcessName.Replace(" ", "", StringComparison.Ordinal)
                     .Equals("LosslessScaling", StringComparison.OrdinalIgnoreCase);
             }
             catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
             catch (Win32Exception) { }
         }
 

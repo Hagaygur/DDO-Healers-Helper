@@ -43,12 +43,12 @@ Conventional commits touching `src/**/*.cs` can raise (never lower) the bump: `f
 
 ## Build and test stages
 
-1. **Python unit tests** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules, and pinned SDK hash/failure handling.
-2. **Portable C# tests & contracts** (`tests/HealersHelper.Tests.csproj --contracts dist/contracts.json`): validates HP state machine, hysteresis, dead-alert timeout/recovery, single-player focus, hotkey matching/dedup, target selector guards, settings persistence, and banner presentation.
+1. **Python unit tests** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules, source package allowlist coverage, and pinned SDK hash/failure handling.
+2. **Portable C# tests & contracts** (`tests/HealersHelper.Tests.csproj --contracts dist/contracts.json`): validates HP state machine, hysteresis, dead-alert timeout/recovery, single-player focus, `PeopleSavedTracker` clutch-save/MaxHP rules, hotkey matching/dedup/auto-repeat suppression, target selector guards, settings persistence, and banner + status HUD presentation.
 3. **Version selection** (`ci/version.py`): resolves next version and `publish` flag against the latest reachable stable release tag.
 4. **Pinned SDK acquisition** (`ci/Get-Sdk.ps1` on Windows, `ci/get_sdk_linux.py` on Ubuntu): downloads `DungeonHelper.msi`, verifies its SHA-256 and `VoK.Sdk.dll` SHA-256 (`4.2.1.0`) from `ci/sdk-lock.json`, and extracts without committing SDK binaries.
 5. **Debug & Release builds + output validation** (`ci/check_build_output.py`): verifies Debug keeps loose runtime files + PDB + ZIP and Release keeps only `HealersHelper-<version>-plugin.zip` (plus repeat Release build on Linux).
-6. **Windows smoke harness** (`tests/WindowsSmoke/WindowsSmoke.csproj`): loads `VoK.HealersHelper.dll` directly from the Release ZIP, verifies assembly metadata/platform attributes, exercises `HealersHelperUi` and `SettingsDialog` at minimum sizes without clipping, and checks native banner rendering / extended window styles.
+6. **Windows smoke harness** (`tests/WindowsSmoke/WindowsSmoke.csproj`): loads `VoK.HealersHelper.dll` directly from the Release ZIP, verifies assembly metadata/platform attributes, exercises `HealersHelperUi` (`380px` and `720px`) and `SettingsDialog` (minimum size, hotkey `Escape`/`Backspace`/duplicate checks, `TogglePluginEnabled`, `ResetPeopleSaved`) without clipping, and checks native `BannerHudWindow` + `StatusHudWindow` rendering and extended window styles (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`).
 7. **Package & checksums** (`ci/package.py`): validates the 3-entry plugin ZIP, builds the source ZIP, and writes `dist/SHA256SUMS.txt`.
 8. **Release** (`ci/release.py`): runs only when both `build` (Windows) and `linux` (Ubuntu) pass on the default branch with `publish == 'true'`.
 
@@ -66,10 +66,10 @@ dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts 
 .\build.ps1 -DungeonHelperDir 'D:\Apps\Dungeon Helper' -Version 1.0.0
 ```
 
-`build.ps1` stamps `src/AssemblyInfo.cs` and `src/VoK.HealersHelper.metadata` in the local working copy only when the target version differs; CI runs in a clean checkout.
+`build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` in the local working copy only when the target version differs; CI runs in a clean checkout.
 
 ## Verification note
 
-GitHub-hosted workflow execution and release publication are unverified until this repository is pushed to GitHub with Actions enabled. Live DDO and Lossless Scaling behavior cannot be inferred from CI builds or synthetic smoke tests.
+GitHub-hosted workflow execution (`linux`, `build`, and `release`) has been verified on `Hagaygur/DDO-Healers-Helper` (`v1.0.0` published cleanly). Live DDO gameplay and live Lossless Scaling behavior (WGC/DXGI) still cannot be inferred from CI builds or synthetic smoke tests and require live verification on a Windows gaming PC.
 
 References: [GitHub .NET builds](https://docs.github.com/en/actions/tutorials/build-and-test-code/net), [workflow syntax and permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), [workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
