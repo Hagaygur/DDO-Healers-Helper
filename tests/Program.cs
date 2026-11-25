@@ -25,6 +25,7 @@ internal static class Program
         TestGamificationStreakClosestCallReflexRanksAndScorecard();
         TestHotkeyMatcherAndDeduplication();
         TestTargetPolicyRules();
+        TestTargetRestoreTracker();
         TestSettingsValidationPersistenceAndFonts();
         TestBannerPresentationAndPositioning();
         TestStatusHudPresentation();
@@ -553,6 +554,197 @@ internal static class Program
         Assert(TargetPolicy.Evaluate(99, "Outsider", -1, false, true, 0, TargetMethod.PartyKeyOnly, true, 0).Action == TargetActionKind.None
                && TargetPolicy.Evaluate(99, "Outsider", -1, false, true, 0, TargetMethod.Auto, true, 0).Action == TargetActionKind.None,
             "external focused player (slot -1) out of range has no party key fallback");
+
+        // TargetPolicy.EvaluateRestore rules (cooldown-free, dead-corpse rejection, SDK & party fallback)
+        Assert(TargetPolicy.EvaluateRestore(900, "Boss", -1, true, false, false, 2, TargetMethod.Off) is { Action: TargetActionKind.None, Status: "Targeting off" },
+            "EvaluateRestore rejects TargetMethod.Off");
+        Assert(TargetPolicy.EvaluateRestore(0, "Boss", -1, true, false, false, 2, TargetMethod.Auto) is { Action: TargetActionKind.None, Status: "No valid target ID" }
+               && TargetPolicy.EvaluateRestore(ulong.MaxValue, "Boss", -1, true, false, false, 2, TargetMethod.Auto) is { Action: TargetActionKind.None, Status: "No valid target ID" },
+            "EvaluateRestore rejects 0 and ulong.MaxValue target IDs");
+        Assert(TargetPolicy.EvaluateRestore(900, "Boss", -1, true, false, false, 900, TargetMethod.Auto) is { Action: TargetActionKind.None, Status: "Already targeting Boss" },
+            "EvaluateRestore skips already-selected target");
+        Assert(TargetPolicy.EvaluateRestore(900, "Boss", -1, true, isDeadNonPlayer: true, false, 2, TargetMethod.Auto) is { Action: TargetActionKind.None, Status: "Original target Boss is dead" },
+            "EvaluateRestore rejects dead non-player monster corpse");
+        Assert(TargetPolicy.EvaluateRestore(900, "Boss", -1, true, isDeadNonPlayer: false, false, 2, TargetMethod.Auto) is { Action: TargetActionKind.SdkSelectObject, TargetId: 900, Status: "Restored target: Boss" }
+               && TargetPolicy.Evaluate(900, "Boss", -1, true, false, 2, TargetMethod.Auto, bypassCooldown: false, cooldownRemainingSeconds: 2.5).Action == TargetActionKind.None,
+            "EvaluateRestore selects live entity via SDK immediately without cooldown gating");
+        Assert(TargetPolicy.EvaluateRestore(900, "   ", -1, true, false, false, 2, TargetMethod.Auto).Status == "Restored target: previous target",
+            "EvaluateRestore falls back to 'previous target' when name is blank");
+        Assert(TargetPolicy.EvaluateRestore(42, "Tank", 1, entityInRange: false, isDeadNonPlayer: false, partyKeyBound: true, currentSelectedId: 2, TargetMethod.Auto)
+               is { Action: TargetActionKind.PartyKeybind, PartyActionName: "TARGET_FELLOW_1_KEY", Status: "Restored target: Tank (TARGET_FELLOW_1_KEY)" },
+            "EvaluateRestore falls back to bound party keybind when ally entity is out of range");
+        Assert(TargetPolicy.EvaluateRestore(42, "Tank", 1, entityInRange: false, isDeadNonPlayer: false, partyKeyBound: true, currentSelectedId: 2, TargetMethod.SdkSelectOnly)
+               is { Action: TargetActionKind.None, Status: "Original target Tank unavailable" },
+            "EvaluateRestore honors SdkSelectOnly when entity is out of range");
+        Assert(TargetPolicy.EvaluateRestore(42, "Tank", 2, entityInRange: true, isDeadNonPlayer: false, partyKeyBound: true, currentSelectedId: 3, TargetMethod.PartyKeyOnly)
+               is { Action: TargetActionKind.PartyKeybind, PartyActionName: "TARGET_FELLOW_2_KEY", Status: "Restored target: Tank (TARGET_FELLOW_2_KEY)" }
+               && TargetPolicy.EvaluateRestore(900, "Boss", -1, entityInRange: true, isDeadNonPlayer: false, partyKeyBound: true, currentSelectedId: 3, TargetMethod.PartyKeyOnly)
+               is { Action: TargetActionKind.None, Status: "Original target Boss unavailable" },
+            "EvaluateRestore honors PartyKeyOnly for party slots and rejects non-party targets");
+    }
+
+    private static void TestTargetRestoreTracker()
+    {
+        var settings = new Settings
+        {
+            HpThresholdPercent = 50,
+            RecoveryHysteresisPercent = 3,
+            MinHealDelta = 5,
+            RestorePreviousTargetAfterHeal = true,
+            RestoreTargetDelaySeconds = 0.2
+        };
+        int recoverAt = 53;
+
+        // 1. Invalid prior targets leave tracker inactive; blank prior name defaults cleanly.
+        var tracker = new TargetRestoreTracker();
+        var aliceLow = new WatchedMemberSnapshot(2, "Alice", 60, 200, 1, true, false);
+        tracker.RecordSwitch(0, "None", -1, aliceLow, recoverAt, 1.0);
+        Assert(!tracker.IsActive, "priorSelectedId == 0 does not arm TargetRestoreTracker");
+        tracker.RecordSwitch(ulong.MaxValue, "Invalid", -1, aliceLow, recoverAt, 1.0);
+        Assert(!tracker.IsActive, "priorSelectedId == ulong.MaxValue does not arm TargetRestoreTracker");
+        tracker.RecordSwitch(2, "Alice", 1, aliceLow, recoverAt, 1.0);
+        Assert(!tracker.IsActive, "priorSelectedId == switchedTo.Id does not arm TargetRestoreTracker");
+
+        // 2. Standard Boss -> Alice -> healed >= threshold+hysteresis -> RestoreTargetDelaySeconds -> Boss (one-shot).
+        tracker.RecordSwitch(900, "Raid Boss", -1, aliceLow, recoverAt, 10.0);
+        Assert(tracker.IsActive, "valid Boss -> Alice switch arms TargetRestoreTracker");
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 10.1) is null,
+            "unhealed 30% player does not restore");
+        var alice52 = new WatchedMemberSnapshot(2, "Alice", 104, 200, 1, true, false); // 52% < 53%
+        Assert(tracker.EvaluateRestore(new[] { alice52 }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 10.4) is null,
+            "52% below 53% recovery hysteresis does not start restore delay");
+        var aliceHealed = new WatchedMemberSnapshot(2, "Alice", 120, 200, 1, true, false); // 60% >= 53%
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.6) is null,
+            "healed tick t=10.6 starts 0.2s restore countdown without restoring immediately");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.75) is null,
+            "before 0.2s delay elapses (0.15s), restore stays pending");
+        var restored = tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.81);
+        Assert(restored is { TargetId: 900, TargetName: "Raid Boss", PartySlotIndex: -1 } && !tracker.IsActive,
+            "once healed and 0.2s delay elapses, returns original Boss candidate and resets");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 10.9) is null,
+            "completed restore is one-shot and does not re-fire");
+
+        // 3. Multi-injury chaining (Boss -> Alice -> Bob -> Boss), unsettled grace chaining, and direct return to original.
+        var bobLow = new WatchedMemberSnapshot(3, "Bob", 30, 200, 2, true, false);
+        var bobHealed = new WatchedMemberSnapshot(3, "Bob", 180, 200, 2, true, false);
+        tracker.RecordSwitch(900, "", -1, aliceLow, recoverAt, 20.0);
+        _ = tracker.EvaluateRestore(new[] { aliceLow, bobLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 20.2);
+        tracker.RecordSwitch(2, "Alice", 1, bobLow, recoverAt, 21.0); // chain from Alice -> Bob
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, settings, currentSelectedId: 3, BannerSeverity.LowHp, 3, false, true, 21.5) is null,
+            "chained Boss -> Alice -> Bob waits for Bob to be healed even after Alice recovers");
+        _ = tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 3, BannerSeverity.None, null, false, true, 22.0);
+        var chainedRestore = tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 3, BannerSeverity.None, null, false, true, 22.25);
+        Assert(chainedRestore is { TargetId: 900, TargetName: "previous target", PartySlotIndex: -1 },
+            "chained Boss -> Alice -> Bob restores original Boss (with default name fallback) rather than intermediate Alice");
+
+        // Unsettled MMF grace chaining (priorSelectedId still Boss within <= 0.8s) preserves Boss.
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 25.0);
+        tracker.RecordSwitch(900, "Boss", -1, bobLow, recoverAt, 25.3);
+        _ = tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 3, BannerSeverity.None, null, false, true, 25.5);
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 3, BannerSeverity.None, null, false, true, 25.75) is { TargetId: 900, TargetName: "Boss" },
+            "unsettled chain within SelectionSettleGraceSeconds preserves original Boss target");
+
+        // Switching directly back to _originalTargetId clears tracker cleanly.
+        tracker.RecordSwitch(2, "Alice", 1, bobLow, recoverAt, 26.0);
+        tracker.RecordSwitch(3, "Bob", 2, aliceLow, recoverAt, 26.5);
+        Assert(!tracker.IsActive, "plugin switching back to _originalTargetId resets tracker");
+
+        // 4. Hold while another watched ally is actively alerting (when AutoTargetOnAlert == true).
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 30.0);
+        _ = tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 30.2);
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 3, false, true, 31.0) is null && tracker.IsActive,
+            "holds restore while another watched ally (Bob) is actively alerting with AutoTargetOnAlert=true");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed, bobHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 31.3) is { TargetId: 900 },
+            "resumes and restores Boss once secondary ally alert clears");
+
+        // 5. MMF settle grace (<= 0.8s) vs unsettled timeout (> 0.8s) vs manual target override after settling.
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 40.0);
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 900, BannerSeverity.LowHp, 2, false, true, 40.6) is null && tracker.IsActive,
+            "unsettled selection within 0.8s grace period stays active");
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 900, BannerSeverity.LowHp, 2, false, true, 40.85) is null && !tracker.IsActive,
+            "selection failing to settle on switched player within 0.8s cancels restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 42.0);
+        _ = tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 42.1); // settled
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 777, BannerSeverity.None, null, false, true, 42.3) is null && !tracker.IsActive,
+            "manual target change after settling cancels restore immediately");
+
+        // 6. Manual hotkey top-off above threshold waits for >= MinHealDelta or full 100% MaxHP.
+        var alice80 = new WatchedMemberSnapshot(2, "Alice", 160, 200, 1, true, false); // 80% >= 53%
+        var aliceRegen = new WatchedMemberSnapshot(2, "Alice", 164, 200, 1, true, false); // +4 < MinHealDelta(5)
+        var aliceTopped = new WatchedMemberSnapshot(2, "Alice", 170, 200, 1, true, false); // +10 >= 5
+        tracker.RecordSwitch(900, "Boss", -1, alice80, recoverAt, 50.0);
+        Assert(tracker.EvaluateRestore(new[] { alice80 }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 50.5) is null,
+            "manual switch to 80% ally does not prematurely restore before heal lands");
+        Assert(tracker.EvaluateRestore(new[] { aliceRegen }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 51.0) is null,
+            "passive +4 regen (< MinHealDelta 5) does not trigger top-off restore");
+        _ = tracker.EvaluateRestore(new[] { aliceTopped }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 51.2);
+        Assert(tracker.EvaluateRestore(new[] { aliceTopped }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 51.45) is { TargetId: 900 },
+            "manual top-off >= MinHealDelta restores original target after delay");
+
+        var alice99 = new WatchedMemberSnapshot(2, "Alice", 198, 200, 1, true, false);
+        var aliceFull = new WatchedMemberSnapshot(2, "Alice", 200, 200, 1, true, false);
+        tracker.RecordSwitch(900, "Boss", -1, alice99, recoverAt, 55.0);
+        _ = tracker.EvaluateRestore(new[] { aliceFull }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 55.2);
+        Assert(tracker.EvaluateRestore(new[] { aliceFull }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 55.45) is { TargetId: 900 },
+            "manual top-off reaching 100% MaxHP (+2 < MinHealDelta) restores original target");
+
+        // 7. Damage dip during RestoreTargetDelaySeconds resets countdown; foregroundAllowed=false holds without resetting.
+        var delaySettings = settings.Copy();
+        delaySettings.RestoreTargetDelaySeconds = 0.5;
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 60.0);
+        _ = tracker.EvaluateRestore(new[] { aliceHealed }, delaySettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 60.2); // healedSince = 60.2
+        Assert(tracker.EvaluateRestore(new[] { aliceLow }, delaySettings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 60.5) is null && tracker.IsActive,
+            "dip back below threshold during delay keeps tracker armed and resets countdown");
+        _ = tracker.EvaluateRestore(new[] { aliceHealed }, delaySettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 60.6); // healedSince = 60.6
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, delaySettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 60.9) is null,
+            "0.3s after re-heal (< 0.5s delay, despite 0.7s since first heal) does not restore early");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, delaySettings, currentSelectedId: 2, BannerSeverity.None, null, false, foregroundAllowed: false, 61.15) is null && tracker.IsActive,
+            "foregroundAllowed=false holds ready restore without cancelling");
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, delaySettings, currentSelectedId: 2, BannerSeverity.None, null, false, foregroundAllowed: true, 61.2) is { TargetId: 900 },
+            "foregroundAllowed=true completes held restore");
+
+        // 8. Incapacitated stays armed; town, disconnect, true death, disabled settings, and >30s window cancel.
+        var aliceIncap = new WatchedMemberSnapshot(2, "Alice", -5, 200, 1, true, IsDeadOrDown: true, IsTrulyDead: false);
+        tracker.RecordSwitch(900, "Boss", -1, aliceIncap, recoverAt, 70.0);
+        Assert(tracker.EvaluateRestore(new[] { aliceIncap }, settings, currentSelectedId: 2, BannerSeverity.CriticalDown, 2, false, true, 70.5) is null && tracker.IsActive,
+            "incapacitated (-5 HP, IsTrulyDead=false) ally stays armed waiting for heal");
+
+        var aliceDead = new WatchedMemberSnapshot(2, "Alice", -12, 200, 1, true, IsDeadOrDown: true, IsTrulyDead: true);
+        Assert(tracker.EvaluateRestore(new[] { aliceDead }, settings, currentSelectedId: 2, BannerSeverity.CriticalDown, 2, false, true, 71.0) is null && !tracker.IsActive,
+            "IsTrulyDead cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 72.0);
+        var aliceOffline = new WatchedMemberSnapshot(2, "Alice", 60, 200, 1, Connected: false, false);
+        Assert(tracker.EvaluateRestore(new[] { aliceOffline }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 72.2) is null && !tracker.IsActive,
+            "disconnected player cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 73.0);
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, inTown: true, true, 73.5) is null && !tracker.IsActive,
+            "entering town cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 74.0);
+        var noRestoreSettings = settings.Copy();
+        noRestoreSettings.RestorePreviousTargetAfterHeal = false;
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, noRestoreSettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 74.5) is null && !tracker.IsActive,
+            "RestorePreviousTargetAfterHeal=false cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 75.0);
+        var pluginOffSettings = settings.Copy();
+        pluginOffSettings.PluginEnabled = false;
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, pluginOffSettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 75.5) is null && !tracker.IsActive,
+            "PluginEnabled=false cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 76.0);
+        var targetOffSettings = settings.Copy();
+        targetOffSettings.TargetingMethod = TargetMethod.Off;
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, targetOffSettings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 76.5) is null && !tracker.IsActive,
+            "TargetingMethod.Off cancels active target restore");
+
+        tracker.RecordSwitch(900, "Boss", -1, aliceLow, recoverAt, 100.0);
+        _ = tracker.EvaluateRestore(new[] { aliceLow }, settings, currentSelectedId: 2, BannerSeverity.LowHp, 2, false, true, 100.2);
+        Assert(tracker.EvaluateRestore(new[] { aliceHealed }, settings, currentSelectedId: 2, BannerSeverity.None, null, false, true, 130.1) is null && !tracker.IsActive,
+            "exceeding 30s MaxRestoreWindowSeconds expires and cancels target restore");
     }
 
     private static void TestSettingsValidationPersistenceAndFonts()
@@ -586,6 +778,7 @@ internal static class Program
             BestReflexMs = 300,
             AvgReflexMs = 300,
             AutoTargetCooldownSeconds = double.PositiveInfinity,
+            RestoreTargetDelaySeconds = double.NaN,
             FocusTargetHotkey = new HotkeyBinding(0xFFFF, true, false, false),
             ToggleModeHotkey = new HotkeyBinding(0x11, true, false, false)
         };
@@ -597,7 +790,14 @@ internal static class Program
             "dead alert, font, opacity, and flash interval clamped");
         Assert(invalid.SaveWindowSeconds == 5.0 && invalid.SelfCastWindowSeconds == 15.0 && invalid.MinHealDelta == 1,
             "SaveWindowSeconds, SelfCastWindowSeconds, and MinHealDelta clamped/sanitized");
-        Assert(invalid.HudX == 0.50 && invalid.HudY == 1.0 && invalid.AutoTargetCooldownSeconds == 3.0, "HudX, HudY, and cooldown clamped/sanitized");
+        Assert(invalid.HudX == 0.50 && invalid.HudY == 1.0 && invalid.AutoTargetCooldownSeconds == 3.0 && invalid.RestoreTargetDelaySeconds == 0.2,
+            "HudX, HudY, cooldown, and RestoreTargetDelaySeconds NaN clamped/sanitized");
+        var negDelay = new Settings { RestoreTargetDelaySeconds = -2.0 };
+        var highDelay = new Settings { RestoreTargetDelaySeconds = 9.5 };
+        negDelay.Validate();
+        highDelay.Validate();
+        Assert(negDelay.RestoreTargetDelaySeconds == 0.0 && highDelay.RestoreTargetDelaySeconds == 5.0,
+            "RestoreTargetDelaySeconds clamped to [0.0, 5.0]");
         Assert(invalid.StatusFontSizePixels == 9 && invalid.StatusHudX == 0.0 && invalid.StatusHudY == 0.76 && invalid.PeopleSaved == 0,
             "StatusFontSizePixels, StatusHudX, StatusHudY, and PeopleSaved clamped/sanitized");
         Assert(invalid.CurrentSaveStreak == 5 && invalid.BestSaveStreak == 5 && invalid.ClosestCallPlayerName == "" && invalid.BestReflexMs == 0,
@@ -655,6 +855,8 @@ internal static class Program
             s.AvgReflexMs = 230;
             s.ReflexSampleCount = 6;
             s.AutoTargetCooldownSeconds = 4.5;
+            s.RestorePreviousTargetAfterHeal = false;
+            s.RestoreTargetDelaySeconds = 0.7;
             s.TogglePluginHotkey = new HotkeyBinding(0x50, true, true, false);
             s.FocusTargetHotkey = new HotkeyBinding(0x46, true, false, true);
             s.ResetSavedHotkey = new HotkeyBinding(0x52, true, true, false);
@@ -676,15 +878,17 @@ internal static class Program
                 "JSON round-trip preserves exact FontSizePixels, DeadAlertSeconds, and ExcludeFromCapture");
             Assert(!reloaded.StatusHudEnabled && reloaded.StatusFontSizePixels == 19 && reloaded.StatusHudX == 0.15 && reloaded.StatusHudY == 0.85,
                 "JSON round-trip preserves StatusHud settings");
-            Assert(reloaded.HudX == 0.25 && reloaded.HudY == 0.75 && reloaded.AutoTargetCooldownSeconds == 4.5,
-                "JSON round-trip preserves HudX, HudY, and AutoTargetCooldownSeconds");
+            Assert(reloaded.HudX == 0.25 && reloaded.HudY == 0.75 && reloaded.AutoTargetCooldownSeconds == 4.5
+                   && !reloaded.RestorePreviousTargetAfterHeal && Math.Abs(reloaded.RestoreTargetDelaySeconds - 0.7) < 0.001,
+                "JSON round-trip preserves HudX, HudY, AutoTargetCooldownSeconds, and target restore settings");
             Assert(reloaded.TogglePluginHotkey == new HotkeyBinding(0x50, true, true, false)
                    && reloaded.FocusTargetHotkey == new HotkeyBinding(0x46, true, false, true)
                    && reloaded.ResetSavedHotkey == new HotkeyBinding(0x52, true, true, false)
                    && reloaded.CopyScorecardHotkey == new HotkeyBinding(0x43, true, true, false),
                 "JSON round-trip preserves all 6 hotkey bindings");
-            Assert(reloaded.Copy().FontSizePixels == 72 && reloaded.Copy().PeopleSaved == 17 && reloaded.Copy().BestReflexMs == 140,
-                "Copy preserves exact FontSizePixels, PeopleSaved, and gamification stats");
+            Assert(reloaded.Copy().FontSizePixels == 72 && reloaded.Copy().PeopleSaved == 17 && reloaded.Copy().BestReflexMs == 140
+                   && !reloaded.Copy().RestorePreviousTargetAfterHeal && Math.Abs(reloaded.Copy().RestoreTargetDelaySeconds - 0.7) < 0.001,
+                "Copy preserves exact FontSizePixels, PeopleSaved, gamification stats, and target restore settings");
         }
         finally
         {

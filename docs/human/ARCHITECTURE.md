@@ -11,8 +11,9 @@ All plugin C# source files live under `src/`.
 | `HealerEngine.cs` | 120 ms scan loop, self+party+entity HP merging, self-cast (`OnHotbarUsage`/`OnRunScript`/`SpellPoints_Current`) & `PeopleSaved` persistence, foreground `GetAsyncKeyState` + `EventProvider.KeyDown`, `Volatile` view snapshot |
 | `HealerState.cs` | Pure threshold + recovery hysteresis, lowest-HP % prioritization, `DeadAlertSeconds` timeout/suppression, `Notice` overlay, strict `PluginEnabled=false` silence |
 | `PeopleSavedTracker.cs` | Pure clutch-save detector (configurable `SelfCastWindowSeconds`, `SaveWindowSeconds`, `MinHealDelta`, `damageTaken > PreHealHp`, MaxHP cap & `InTown()` guards) |
+| `TargetRestoreTracker.cs` | Pure post-heal previous-target restoration tracker (`SelectionSettleGraceSeconds`, `MaxRestoreWindowSeconds`, multi-injury chaining, manual-override cancellation, `RestoreTargetDelaySeconds`) |
 | `HealerStats.cs` | Pure gamification helpers (`StreakTracker` on `LifeState.Dead`, `ReflexTracker` `50..10000ms`, `ClosestCall`/`OnePercentClub`, `RankForSaves`, pure ASCII `<= 185` `FormatChatScorecard`) |
-| `TargetSelector.cs` | `SelectObject(ulong)` with `0 < id < ulong.MaxValue` and `GetSelectedObjectId().GetValueOrDefault()` guards, cooldown, and `IKeymap` + `SendKey` fallback |
+| `TargetSelector.cs` | `SelectObject(ulong)` with `0 < id < ulong.MaxValue` and `GetSelectedObjectId().GetValueOrDefault()` guards, cooldown on `TrySelect`, cooldown-free `TryRestore` (rejecting dead non-player corpses), and `IKeymap` + `SendKey` fallback |
 | `HotkeyMatcher.cs` | Pure hotkey matching and deduplication across `EventProvider.KeyDown` and `GetAsyncKeyState` |
 | `Settings.cs` | Validation, clamping, atomic `.tmp` JSON persistence (`healers-helper.json`), exact integer banner (`18..140`) & status (`9..48`) pixel font sizing |
 | `BannerPresentation.cs` | Pure banner text, color/flash phase (`FlashIntervalMs`), `CriticalDown`/`LowHp`/`Notice`/`Editing` computation |
@@ -27,7 +28,7 @@ All plugin C# source files live under `src/`.
 ```mermaid
 flowchart TD
   A["DH GameData (Self + GetPartyMembers + GetEntity) and Hotkeys"] --> B["HealerEngine scan and lock"]
-  B --> C["HealerState, PeopleSavedTracker, and TargetSelector"]
+  B --> C["HealerState, PeopleSavedTracker, TargetRestoreTracker, and TargetSelector"]
   C --> D["Immutable AlertBannerView (Volatile)"]
   D --> E["BannerHudWindow and StatusHudWindow (STA thread)"]
   F["DH Settings / Control Panel"] --> B
@@ -44,6 +45,8 @@ flowchart TD
 ## Targeting and hotkeys
 
 `TargetSelector` prefers `SelectObject(ulong)` (`Auto` and `SdkSelectOnly`), which writes an MMF command to `dndpl.dll` without subscription gates. Because `GetSelectedObjectId()` returns `(ulong?)0` rather than `null` when nothing is selected, `TargetSelector` checks `targetId > 0 && targetId < ulong.MaxValue`, verifies `GetEntity(targetId)` is non-null and `!IsDeleted`, and compares `GetSelectedObjectId().GetValueOrDefault() != targetId` while honoring `AutoTargetCooldownSeconds` (default 3.0s). In `PartyKeyOnly`, it resolves `TARGET_SELF_KEY` or `TARGET_FELLOW_{slot}_KEY` via `IKeymap.GetHotkey` and reports unbound slots in `TargetingStatus` rather than inventing keys.
+
+When `RestorePreviousTargetAfterHeal` (default `true`) is enabled, `TargetRestoreTracker` records the prior selected object before `TrySelect` switches to an injured ally (preserving the original target across chained multi-injury switches such as `Boss -> Alice -> Bob`). Once selection settles within `SelectionSettleGraceSeconds` (`0.8s`), manual target changes, entering town, disconnects, true character death (`LifeState.Dead`), or exceeding `MaxRestoreWindowSeconds` (`30.0s`) cancel restoration. When the switched player recovers (`Percent >= HpThresholdPercent + RecoveryHysteresisPercent`, or `>= MinHealDelta` / `100%` MaxHP for manual top-offs) and `RestoreTargetDelaySeconds` (default `0.2s`) elapses with no other active auto-target alert, `TargetSelector.TryRestore` re-selects the original target without checking or modifying `AutoTargetCooldownSeconds`, while rejecting dead non-player corpses.
 
 Hotkeys listen to both `EventProvider.KeyDown` (when DH `HotKeysEnabled` is true) and a foreground-gated `GetAsyncKeyState` edge poll, deduplicated in `HotkeyMatcher` so rapid or dual notifications never double-trigger.
 

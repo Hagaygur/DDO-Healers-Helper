@@ -13,6 +13,7 @@
     <Compile Include="../src/HotkeyMatcher.cs" Link="HotkeyMatcher.cs" />
     <Compile Include="../src/HealerStats.cs" Link="HealerStats.cs" />
     <Compile Include="../src/PeopleSavedTracker.cs" Link="PeopleSavedTracker.cs" />
+    <Compile Include="../src/TargetRestoreTracker.cs" Link="TargetRestoreTracker.cs" />
     <Compile Include="../src/HealerState.cs" Link="HealerState.cs" />
     <Compile Include="../src/BannerPresentation.cs" Link="BannerPresentation.cs" />
     <Compile Include="../src/StatusHudPresentation.cs" Link="StatusHudPresentation.cs" />

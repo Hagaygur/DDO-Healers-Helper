@@ -31,6 +31,7 @@ See [GITHUB.md](GITHUB.md) for the included GitHub Actions workflow: first stabl
   - *Note:* Windows API acceptance (`Capture exclusion: ON`) does not prove live Lossless Scaling compatibility; live testing under WGC and DXGI on Windows is still required.
 - **Player Targeting & Hotkeys:**
   - **Auto-target / Target Critical:** Prefers DH `SelectObject(ulong)` (`Auto` / `SdkSelectOnly`), which communicates directly with `dndpl.dll` via MMF without relying on party keybinds. Optional `PartyKeyOnly` mode uses `IKeymap.GetHotkey` + `SendKey` (`TARGET_SELF_KEY` / `TARGET_FELLOW_{slot}_KEY`, noting that default `ddo.keymap` typically binds only F1–F6 and leaves self and slots 7–12 unbound).
+  - **Automatic Previous-Target Restoration:** When enabled (`RestorePreviousTargetAfterHeal`, default `true`), remembers your prior target (e.g. a raid boss or main tank) before auto-target or `Target Critical` switches to an injured ally, chains across consecutive injured allies (`Boss -> Alice -> Bob -> Boss`), cancels immediately if you manually change targets, skips dead monster corpses, and restores your original target after `RestoreTargetDelaySeconds` (default `0.2 s`) without consuming auto-target cooldown.
 - **Directly Installable Runtime ZIP:**
   - `HealersHelper-<version>-plugin.zip` contains strictly the three runtime files under `plugins/HealersHelper/`, DLL first.
 
@@ -81,6 +82,8 @@ Settings persist to `%APPDATA%\Dungeon Helper\plugins\HealersHelper\healers-help
 | **Automatic Player Targeting** | `AutoTargetOnAlert` | `true` | `true` / `false` | Automatically select the prioritized critical/low watched player on a new alert |
 | **Automatic Player Targeting** | `TargetingMethod` | `Auto` | `Off`, `Auto`, `SdkSelectOnly`, `PartyKeyOnly` | Selection backend (`Auto` tries `SelectObject(ulong)` first, then bound party keybind fallback) |
 | **Automatic Player Targeting** | `AutoTargetCooldownSeconds` | `3.0` | `0.5`–`30.0` (`s`) | Minimum delay between automatic target switches (manual `Target Critical` bypasses cooldown) |
+| **Automatic Player Targeting** | `RestorePreviousTargetAfterHeal` | `true` | `true` / `false` | Automatically re-select your prior target (e.g. boss/mob/tank) once the healed ally recovers |
+| **Automatic Player Targeting** | `RestoreTargetDelaySeconds` | `0.2` | `0.0`–`5.0` (`s`) | Post-heal settle delay before restoring your previous target (resets if HP dips again) |
 
 *(HUD screen positions `HudX`/`HudY` default to `0.50`/`0.42` and `StatusHudX`/`StatusHudY` default to `0.50`/`0.76`, clamped to `0.0`–`1.0`, and are updated interactively via **Move Banner** and **Move Status**.)*
 
@@ -127,7 +130,7 @@ Compiled against **VoK.Sdk 4.2.1.0**, matching Dungeon Helper 4.2.0.146's instal
 
 ## Verification status and limits
 
-- **Verified by IL/binary inspection, unit/smoke suites & CI:** Dungeon Helper 4.2.0.146 (`VoK.Sdk 4.2.1.0`) behavior for `GetPartyMembers()` (excludes self, cached getters, no 6/12 cap), `IEntity` (`HitPoints_Current`, `LifeState`, `EntityExtensions.IsPlayer`), `SelectObject(ulong)` (MMF, no subscription check), `GetSelectedObjectId()` (`0` when unselected), `EventProvider.KeyDown`/`KeyUp` (`HotKeysEnabled`), local `ddo.keymap` bindings, **175** portable C# assertions (`HealersHelper.Tests`), **24** Python CI/packaging/semver checks, **4** `WindowsSmoke` WinForms/layered-HUD/ZIP suites, WSL Ubuntu 22.04 cross-compilation, and GitHub-hosted Actions (`linux` + `build` + `release`, verified across `v1.0.0`–`v1.1.0`).
+- **Verified by IL/binary inspection, unit/smoke suites & CI:** Dungeon Helper 4.2.0.146 (`VoK.Sdk 4.2.1.0`) behavior for `GetPartyMembers()` (excludes self, cached getters, no 6/12 cap), `IEntity` (`HitPoints_Current`, `LifeState`, `EntityExtensions.IsPlayer`), `SelectObject(ulong)` (MMF, no subscription check), `GetSelectedObjectId()` (`0` when unselected), `EventProvider.KeyDown`/`KeyUp` (`HotKeysEnabled`), local `ddo.keymap` bindings, **220** portable C# assertions (`HealersHelper.Tests`), **24** Python CI/packaging/semver checks, **4** `WindowsSmoke` WinForms/layered-HUD/ZIP suites, WSL Ubuntu 22.04 cross-compilation, and GitHub-hosted Actions (`linux` + `build` + `release`, verified across `v1.0.0`–`v1.1.0`).
 - **Unverified at authoring time:** Live DDO gameplay and live Lossless Scaling capture modes (WGC/DXGI). See [docs/human/OPERATIONS.md](docs/human/OPERATIONS.md) for the live verification checklist.
 
 ## Building from source

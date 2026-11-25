@@ -1,7 +1,9 @@
 using System;
 using VoK.Sdk;
 using VoK.Sdk.Ddo;
+using VoK.Sdk.Ddo.Enums;
 using VoK.Sdk.Events;
+using VoK.Sdk.Helpers;
 
 namespace VoK.HealersHelper;
 
@@ -66,6 +68,59 @@ internal sealed class TargetSelector
         {
             _data.SendKey(hotkey);
             _nextAutoAllowedAt = now + settings.AutoTargetCooldownSeconds;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryRestore(RestoreCandidate candidate, Settings settings)
+    {
+        if (_data is null)
+        {
+            LastStatus = "Game data unavailable";
+            return false;
+        }
+
+        IEntity? entity = candidate.TargetId > 0 && candidate.TargetId < ulong.MaxValue
+            ? _data.GetEntity(candidate.TargetId)
+            : null;
+        bool entityInRange = entity is not null && !entity.IsDeleted;
+        bool isDeadNonPlayer = entity is not null
+            && !entity.IsDeleted
+            && !entity.IsPlayer()
+            && (entity.LifeState == LifeState.Dead || (entity.HitPoints_Max > 0 && entity.HitPoints_Current <= 0));
+
+        string? partyAction = TargetPolicy.PartyActionForSlot(candidate.PartySlotIndex);
+        HotKeyEventArgs? hotkey = partyAction is not null
+            ? _data.Keymap?.GetHotkey(partyAction)
+            : null;
+
+        ulong currentSelected = _data.GetSelectedObjectId().GetValueOrDefault();
+
+        TargetDecision decision = TargetPolicy.EvaluateRestore(
+            candidate.TargetId,
+            candidate.TargetName,
+            candidate.PartySlotIndex,
+            entityInRange,
+            isDeadNonPlayer,
+            hotkey is not null,
+            currentSelected,
+            settings.TargetingMethod);
+
+        LastStatus = decision.Status;
+        if (decision.Action == TargetActionKind.None)
+            return false;
+
+        if (decision.Action == TargetActionKind.SdkSelectObject)
+        {
+            _data.SelectObject(decision.TargetId);
+            return true;
+        }
+
+        if (decision.Action == TargetActionKind.PartyKeybind && hotkey is not null)
+        {
+            _data.SendKey(hotkey);
             return true;
         }
 

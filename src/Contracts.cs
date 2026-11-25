@@ -223,4 +223,58 @@ internal static class TargetPolicy
                 return new(TargetActionKind.None, 0, partySlotIndex, "", "Targeting off");
         }
     }
+
+    public static TargetDecision EvaluateRestore(
+        ulong targetId,
+        string targetName,
+        int partySlotIndex,
+        bool entityInRange,
+        bool isDeadNonPlayer,
+        bool partyKeyBound,
+        ulong currentSelectedId,
+        TargetMethod method)
+    {
+        if (method == TargetMethod.Off)
+            return new(TargetActionKind.None, 0, partySlotIndex, "", "Targeting off");
+
+        if (targetId == 0 || targetId == ulong.MaxValue)
+            return new(TargetActionKind.None, 0, partySlotIndex, "", "No valid target ID");
+
+        string displayName = string.IsNullOrWhiteSpace(targetName) ? "previous target" : targetName;
+
+        if (currentSelectedId == targetId)
+            return new(TargetActionKind.None, targetId, partySlotIndex, "", $"Already targeting {displayName}");
+
+        if (isDeadNonPlayer)
+            return new(TargetActionKind.None, targetId, partySlotIndex, "", $"Original target {displayName} is dead");
+
+        string? actionName = PartyActionForSlot(partySlotIndex);
+
+        switch (method)
+        {
+            case TargetMethod.SdkSelectOnly:
+                if (entityInRange)
+                    return new(TargetActionKind.SdkSelectObject, targetId, partySlotIndex, "", $"Restored target: {displayName}");
+                return new(TargetActionKind.None, targetId, partySlotIndex, "", $"Original target {displayName} unavailable");
+
+            case TargetMethod.PartyKeyOnly:
+                if (actionName is not null && partyKeyBound)
+                    return new(TargetActionKind.PartyKeybind, targetId, partySlotIndex, actionName,
+                        $"Restored target: {displayName} ({actionName})");
+                return new(TargetActionKind.None, targetId, partySlotIndex, actionName ?? "",
+                    $"Original target {displayName} unavailable");
+
+            case TargetMethod.Auto:
+                if (entityInRange)
+                    return new(TargetActionKind.SdkSelectObject, targetId, partySlotIndex, "", $"Restored target: {displayName}");
+                if (actionName is not null && partyKeyBound)
+                    return new(TargetActionKind.PartyKeybind, targetId, partySlotIndex, actionName,
+                        $"Restored target: {displayName} ({actionName})");
+                return new(TargetActionKind.None, targetId, partySlotIndex, actionName ?? "",
+                    $"Original target {displayName} unavailable");
+
+            default:
+                return new(TargetActionKind.None, 0, partySlotIndex, "", "Targeting off");
+        }
+    }
 }

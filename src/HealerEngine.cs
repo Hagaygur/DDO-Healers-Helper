@@ -39,8 +39,10 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
     private StreakTracker? _streakTracker = new();
     private ReflexTracker? _reflexTracker = new();
+    private TargetRestoreTracker? _restoreTracker = new();
     private StreakTracker Streak => _streakTracker ??= new StreakTracker();
     private ReflexTracker Reflex => _reflexTracker ??= new ReflexTracker();
+    private TargetRestoreTracker Restore => _restoreTracker ??= new TargetRestoreTracker();
 
     private IntPtr _gameWindow;
     private int _gamePid;
@@ -168,6 +170,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 _savedTracker.Reset();
                 Streak.Reset();
                 Reflex.Reset();
+                Restore.Reset();
                 _hotkeys.Reset();
                 _selector?.ResetCooldown();
                 _character = null;
@@ -218,10 +221,18 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             {
                 ResetTransientOnDisableLocked();
             }
-            else if (pausedMode)
+            else
             {
-                _savedTracker.Reset();
-                Reflex.Reset();
+                if (pausedMode)
+                {
+                    _savedTracker.Reset();
+                    Reflex.Reset();
+                }
+
+                if (!copy.RestorePreviousTargetAfterHeal || pausedMode || copy.TargetingMethod == TargetMethod.Off)
+                {
+                    Restore.Reset();
+                }
             }
             EvaluateLocked(Now);
         }
@@ -579,6 +590,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
         _savedTracker.Reset();
         Streak.Reset();
         Reflex.Reset();
+        Restore.Reset();
         _selector?.ResetCooldown();
         ClearSelfCast();
         _prevSelfSp = null;
@@ -677,7 +689,12 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             return false;
         }
 
+        ulong priorSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
         bool selected = _selector.TrySelect(target.Id, target.Name, target.PartySlotIndex, _settings, now, bypassCooldown);
+        if (selected && _settings.RestorePreviousTargetAfterHeal)
+        {
+            RecordRestoreSwitchLocked(priorSelected, current, target, now);
+        }
         if (bypassCooldown)
             _state.SetNotice(selected ? $"TARGETED: {target.Name}" : "TARGET FAILED", _selector.LastStatus, 1.5, now);
 
@@ -694,6 +711,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             _savedTracker.Reset();
             Streak.Reset();
             Reflex.Reset();
+            Restore.Reset();
             _selector?.ResetCooldown();
             _character = charId;
             _inTown = false;
@@ -710,6 +728,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             _savedTracker.Reset();
             Streak.Reset();
             Reflex.Reset();
+            Restore.Reset();
             _inTown = false;
             return;
         }
@@ -938,7 +957,12 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 var target = current.FirstOrDefault(m => m.Id == alertId);
                 if (target is not null)
                 {
+                    ulong priorSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
                     bool selected = _selector.TrySelect(target.Id, target.Name, target.PartySlotIndex, _settings, now, bypassCooldown: false);
+                    if (selected && _settings.RestorePreviousTargetAfterHeal)
+                    {
+                        RecordRestoreSwitchLocked(priorSelected, current, target, now);
+                    }
                     ulong currentSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
                     if (selected || currentSelected == target.Id)
                     {
@@ -949,8 +973,58 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             }
         }
 
+        ulong latestSelected = _data?.GetSelectedObjectId().GetValueOrDefault() ?? 0;
+        if (Restore.EvaluateRestore(
+                current,
+                _settings,
+                latestSelected,
+                view.Severity,
+                view.AlertPlayerId,
+                _inTown,
+                IsGameOrOverlayForeground(),
+                now) is { } candidate)
+        {
+            _selector?.TryRestore(candidate, _settings);
+            view = view with { TargetingStatus = _selector?.LastStatus ?? view.TargetingStatus };
+        }
+
         Reflex.OnAlertEvaluated(view, now);
         Volatile.Write(ref _view, view);
+    }
+
+    private void RecordRestoreSwitchLocked(
+        ulong priorSelected,
+        WatchedMemberSnapshot[] current,
+        WatchedMemberSnapshot target,
+        double now)
+    {
+        string priorName = SafeResolveTargetName(priorSelected);
+        var priorMember = priorSelected > 0 && priorSelected < ulong.MaxValue
+            ? current.FirstOrDefault(m => m.Id == priorSelected)
+            : null;
+        if (string.IsNullOrWhiteSpace(priorName) && priorMember is not null)
+        {
+            priorName = priorMember.Name;
+        }
+
+        int priorSlot = priorMember?.PartySlotIndex ?? -1;
+        int recoverThreshold = Math.Min(100, _settings.HpThresholdPercent + _settings.RecoveryHysteresisPercent);
+        Restore.RecordSwitch(priorSelected, priorName, priorSlot, target, recoverThreshold, now);
+    }
+
+    private string SafeResolveTargetName(ulong targetId)
+    {
+        if (_data is null || targetId == 0 || targetId == ulong.MaxValue)
+            return "";
+
+        try
+        {
+            return ResolveTargetName(targetId);
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private string ResolveTargetName(ulong targetId)
@@ -1062,6 +1136,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             _savedTracker.Reset();
             Streak.Reset();
             Reflex.Reset();
+            Restore.Reset();
             _hotkeys.Reset();
             Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
             Volatile.Write(ref _view, new AlertBannerView(

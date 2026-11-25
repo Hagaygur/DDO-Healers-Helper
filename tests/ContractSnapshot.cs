@@ -63,6 +63,13 @@ internal static class ContractSnapshot
 
         var sdkDecision = TargetPolicy.Evaluate(2, "Alice", 1, true, true, 0, TargetMethod.Auto, false, 0);
         var fallbackDecision = TargetPolicy.Evaluate(2, "Alice", 1, false, true, 0, TargetMethod.Auto, false, 0);
+        var restoreSdkDecision = TargetPolicy.EvaluateRestore(900, "Boss", -1, true, false, false, 2, TargetMethod.Auto);
+        var restoreDeadMobDecision = TargetPolicy.EvaluateRestore(900, "Boss", -1, true, true, false, 2, TargetMethod.Auto);
+        var restoreTracker = new TargetRestoreTracker();
+        restoreTracker.RecordSwitch(900, "Boss", -1, new WatchedMemberSnapshot(2, "Alice", 40, 200, 1, true, false), 53, 1.0);
+        var healedAlice = new[] { new WatchedMemberSnapshot(2, "Alice", 180, 200, 1, true, false) };
+        _ = restoreTracker.EvaluateRestore(healedAlice, settings, 2, BannerSeverity.None, null, false, true, 1.2);
+        var restoredCandidate = restoreTracker.EvaluateRestore(healedAlice, settings, 2, BannerSeverity.None, null, false, true, 1.5);
         compatibility["target-policy.sdk-primary"] = sdkDecision.Action.ToString();
         compatibility["target-policy.party-fallback"] = fallbackDecision.Action.ToString();
         compatibility["target-policy.party-action-1"] = TargetPolicy.PartyActionForSlot(1)!;
@@ -111,6 +118,11 @@ internal static class ContractSnapshot
             ["gamification.scorecard-ascii-valid"] = sampleScorecard.Length <= HealerStats.MaxScorecardLength && sampleScorecard.All(c => c is >= (char)0x20 and <= (char)0x7E),
             ["auto-target.enabled-default"] = settings.AutoTargetOnAlert,
             ["auto-target.cooldown-default-seconds"] = settings.AutoTargetCooldownSeconds,
+            ["auto-target.restore-previous-default"] = settings.RestorePreviousTargetAfterHeal,
+            ["auto-target.restore-delay-default-seconds"] = settings.RestoreTargetDelaySeconds,
+            ["target-policy.restore-sdk"] = restoreSdkDecision.Action.ToString(),
+            ["target-policy.restore-rejects-dead-mob"] = restoreDeadMobDecision.Action == TargetActionKind.None,
+            ["target-restore.healed-restores-original"] = restoredCandidate is { TargetId: 900UL },
             ["hotkey.toggle-plugin-default"] = settings.TogglePluginHotkey.Format(),
             ["hotkey.focus-default"] = settings.FocusTargetHotkey.Format(),
             ["hotkey.toggle-default"] = settings.ToggleModeHotkey.Format(),

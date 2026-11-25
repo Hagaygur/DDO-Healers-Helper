@@ -47,6 +47,8 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _autoTarget = new() { Name = "AutoTargetCheckBox", Text = "Auto-target critical player on alert", AutoSize = true };
     private readonly ComboBox _targetMethod = new() { Name = "TargetMethodCombo", DropDownStyle = ComboBoxStyle.DropDownList, Width = 135 };
     private readonly NumericUpDown _targetCooldown = new() { Name = "AutoTargetCooldownNumeric", Minimum = 0.5m, Maximum = 30.0m, DecimalPlaces = 1, Increment = 0.5m, Width = 65 };
+    private readonly CheckBox _restorePreviousTarget = new() { Name = "RestorePreviousTargetCheckBox", Text = "Restore previous target once healed", AutoSize = true };
+    private readonly NumericUpDown _restoreDelay = new() { Name = "RestoreTargetDelayNumeric", Minimum = 0.0m, Maximum = 5.0m, DecimalPlaces = 1, Increment = 0.1m, Width = 60 };
 
     // Group 5: Global Hotkeys
     private readonly TextBox _togglePluginHotkeyBox = new() { Name = "TogglePluginHotkeyBox", ReadOnly = true, Width = 140 };
@@ -213,7 +215,7 @@ internal sealed class SettingsDialog : Form
 
         // Section 4: Auto-Targeting
         var targetGroup = CreateGroup("Automatic Player Targeting");
-        var targetFlow = CreateFlow();
+        var targetTable = CreateStackTable(2);
         foreach (var tm in Enum.GetValues<TargetMethod>())
         {
             _targetMethod.Items.Add(tm);
@@ -222,14 +224,29 @@ internal sealed class SettingsDialog : Form
         _targetMethod.SelectedItem = _settings.TargetingMethod;
         _autoTarget.Checked = _settings.AutoTargetOnAlert;
         _targetCooldown.Value = (decimal)Math.Clamp(_settings.AutoTargetCooldownSeconds, 0.5, 30.0);
+        _restorePreviousTarget.Checked = _settings.RestorePreviousTargetAfterHeal;
+        _restoreDelay.Value = (decimal)(double.IsFinite(_settings.RestoreTargetDelaySeconds)
+            ? Math.Clamp(_settings.RestoreTargetDelaySeconds, 0.0, 5.0)
+            : 0.2);
 
-        targetFlow.Controls.AddRange(new Control[]
+        var targetRow0 = CreateFlow();
+        targetRow0.Controls.AddRange(new Control[]
         {
             _autoTarget,
             MakeFieldLabel("Method"), _targetMethod,
             MakeFieldLabel("Cooldown (s)"), _targetCooldown
         });
-        targetGroup.Controls.Add(targetFlow);
+
+        var targetRow1 = CreateFlow();
+        targetRow1.Controls.AddRange(new Control[]
+        {
+            _restorePreviousTarget,
+            MakeFieldLabel("Restore delay (s)"), _restoreDelay
+        });
+
+        targetTable.Controls.Add(targetRow0, 0, 0);
+        targetTable.Controls.Add(targetRow1, 0, 1);
+        targetGroup.Controls.Add(targetTable);
         root.Controls.Add(targetGroup, 0, 3);
 
         // Section 5: Global Hotkeys
@@ -438,6 +455,8 @@ internal sealed class SettingsDialog : Form
             _settings.AutoTargetOnAlert = _autoTarget.Checked;
             _settings.TargetingMethod = _targetMethod.SelectedItem is TargetMethod tm ? tm : TargetMethod.Auto;
             _settings.AutoTargetCooldownSeconds = (double)_targetCooldown.Value;
+            _settings.RestorePreviousTargetAfterHeal = _restorePreviousTarget.Checked;
+            _settings.RestoreTargetDelaySeconds = (double)_restoreDelay.Value;
 
             _settings.TogglePluginHotkey = _togglePluginHotkey;
             _settings.FocusTargetHotkey = _focusHotkey;

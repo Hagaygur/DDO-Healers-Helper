@@ -195,8 +195,23 @@ internal static class Program
                 var deadNumeric = (NumericUpDown)dialog.Controls.Find("DeadAlertSecondsNumeric", true).Single();
                 var excludeBox = (CheckBox)dialog.Controls.Find("ExcludeFromCaptureCheckBox", true).Single();
                 var cooldownNumeric = (NumericUpDown)dialog.Controls.Find("AutoTargetCooldownNumeric", true).Single();
+                var restorePrevBox = (CheckBox)dialog.Controls.Find("RestorePreviousTargetCheckBox", true).Single();
+                var restoreDelayNumeric = (NumericUpDown)dialog.Controls.Find("RestoreTargetDelayNumeric", true).Single();
                 var statusLabel = (Label)dialog.Controls.Find("StatusLabel", true).Single();
                 var saveBtn = (Button)dialog.Controls.Find("SaveButton", true).Single();
+
+                if (!restorePrevBox.Visible || !restoreDelayNumeric.Visible || !restorePrevBox.Checked || restoreDelayNumeric.Value != 0.2m)
+                    throw new Exception("Expected visible RestorePreviousTargetCheckBox (true) and RestoreTargetDelayNumeric (0.2s) defaults");
+
+                Rectangle restoreBoxInDialog = dialog.RectangleToClient(restorePrevBox.Parent!.RectangleToScreen(restorePrevBox.Bounds));
+                Rectangle restoreDelayInDialog = dialog.RectangleToClient(restoreDelayNumeric.Parent!.RectangleToScreen(restoreDelayNumeric.Bounds));
+                if (!restorePrevBox.Parent.ClientRectangle.Contains(restorePrevBox.Bounds)
+                    || !restoreDelayNumeric.Parent.ClientRectangle.Contains(restoreDelayNumeric.Bounds)
+                    || restoreBoxInDialog.Left < 0 || restoreBoxInDialog.Right > dialog.ClientSize.Width
+                    || restoreDelayInDialog.Left < 0 || restoreDelayInDialog.Right > dialog.ClientSize.Width)
+                {
+                    throw new Exception($"Restore controls clipped at 640x560: check={restoreBoxInDialog}, delay={restoreDelayInDialog}, client={dialog.ClientSize}");
+                }
 
                 if (toggleHotkeyBox.Text != "Ctrl+Shift+K" || copyCardHotkeyBox.Text != "None")
                     throw new Exception($"Unexpected default hotkey texts: {toggleHotkeyBox.Text} / {copyCardHotkeyBox.Text}");
@@ -248,6 +263,8 @@ internal static class Program
                 deadNumeric.Value = 11;
                 excludeBox.Checked = false;
                 cooldownNumeric.Value = 4.5m;
+                restorePrevBox.Checked = false;
+                restoreDelayNumeric.Value = 0.8m;
 
                 // Simulate live gamification increments while SettingsDialog is open!
                 settingsType.GetProperty("PeopleSaved")!.SetValue(settings, 18);
@@ -287,11 +304,16 @@ internal static class Program
                     || root.GetProperty("ClosestCallPlayerName").GetString() != "Tanky"
                     || root.GetProperty("OnePercentClubSaves").GetInt32() != 3
                     || root.GetProperty("BestReflexMs").GetInt32() != 175
-                    || Math.Abs(root.GetProperty("AutoTargetCooldownSeconds").GetDouble() - 4.5) > 0.001)
+                    || Math.Abs(root.GetProperty("AutoTargetCooldownSeconds").GetDouble() - 4.5) > 0.001
+                    || root.GetProperty("RestorePreviousTargetAfterHeal").GetBoolean() != false
+                    || Math.Abs(root.GetProperty("RestoreTargetDelaySeconds").GetDouble() - 0.8) > 0.001)
                 {
-                    throw new Exception("SettingsDialog save did not round-trip extended settings and preserve all live gamification stats");
+                    throw new Exception("SettingsDialog save did not round-trip extended settings, target restore settings, and live gamification stats");
                 }
             }
+
+            if (engineType.GetField("_restoreTracker", fields)!.GetValue(engine) is null)
+                throw new Exception("HealerEngine.Restore did not lazily initialize _restoreTracker on uninitialized smoke instance");
 
             // Refresh HealerControlForm and verify dynamic hotkey tooltips reflect Ctrl+Shift+C / Ctrl+Shift+R!
             controlForm.GetType().GetMethod("RefreshState", fields)!.Invoke(controlForm, null);

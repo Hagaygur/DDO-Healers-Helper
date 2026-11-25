@@ -60,6 +60,8 @@ internal sealed class Settings
     public bool AutoTargetOnAlert { get; set; } = true;
     public TargetMethod TargetingMethod { get; set; } = TargetMethod.Auto;
     public double AutoTargetCooldownSeconds { get; set; } = 3.0;
+    public bool RestorePreviousTargetAfterHeal { get; set; } = true;
+    public double RestoreTargetDelaySeconds { get; set; } = 0.2;
     public HotkeyBinding TogglePluginHotkey { get; set; } = DefaultTogglePluginHotkey;
     public HotkeyBinding FocusTargetHotkey { get; set; } = DefaultFocusTargetHotkey;
     public HotkeyBinding ToggleModeHotkey { get; set; } = DefaultToggleModeHotkey;
@@ -102,6 +104,8 @@ internal sealed class Settings
             AutoTargetOnAlert = AutoTargetOnAlert,
             TargetingMethod = TargetingMethod,
             AutoTargetCooldownSeconds = AutoTargetCooldownSeconds,
+            RestorePreviousTargetAfterHeal = RestorePreviousTargetAfterHeal,
+            RestoreTargetDelaySeconds = RestoreTargetDelaySeconds,
             TogglePluginHotkey = NormalizeHotkey(TogglePluginHotkey),
             FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey),
             ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey),
@@ -206,6 +210,9 @@ internal sealed class Settings
         AutoTargetCooldownSeconds = double.IsFinite(AutoTargetCooldownSeconds)
             ? Math.Clamp(AutoTargetCooldownSeconds, 0.5, 30.0)
             : 3.0;
+        RestoreTargetDelaySeconds = double.IsFinite(RestoreTargetDelaySeconds)
+            ? Math.Clamp(RestoreTargetDelaySeconds, 0.0, 5.0)
+            : 0.2;
         TogglePluginHotkey = NormalizeHotkey(TogglePluginHotkey);
         FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey);
         ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey);
