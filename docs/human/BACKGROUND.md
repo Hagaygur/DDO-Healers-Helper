@@ -19,7 +19,7 @@ The plugin uses DH's local game-data provider and keymap/selection APIs. It does
 
 ## Evidence and remaining verification
 
-- **Verified:** Stage 1 IL/metadata/SHA-256 verification of `VoK.Sdk.dll` (`4.2.1.0`), `DungeonHelper.dll` (`4.2.0.146`), and local `ddo.keymap`, `AlchPlugin` Win32/CI reference patterns, local Windows & WSL builds/tests, and live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`).
+- **Verified:** Stage 1 IL/metadata/SHA-256 verification of `VoK.Sdk.dll` (`4.2.1.0`), `DungeonHelper.dll` (`4.2.0.146`), and local `ddo.keymap`, `AlchPlugin` Win32/CI reference patterns, local Windows & WSL builds/tests (175 C# assertions, 24 Python CI checks, 4 Windows smoke suites), and live GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.1.0`).
 - **Unverified at authoring time:** Live DDO gameplay behavior and live Lossless Scaling capture modes (WGC and DXGI).
 
 See [Operations](OPERATIONS.md) for the live verification checklist and [References](REFERENCES.md) for external documentation. Agent counterpart: [Context](../agents/CONTEXT.md).
