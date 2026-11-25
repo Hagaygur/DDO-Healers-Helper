@@ -1,0 +1,50 @@
+# Build, release and troubleshooting
+
+## Install and use
+
+Install the release asset named `HealersHelper-X.Y.Z-plugin.zip` directly through Dungeon Helper (**Settings -> Add plugin from zip file**). It contains strictly `VoK.HealersHelper.dll`, `VoK.HealersHelper.deps.json`, and `VoK.HealersHelper.metadata` under `plugins/HealersHelper/`, DLL first. Never import `HealersHelper-X.Y.Z-source.zip` into DH.
+
+Close DDO before updating and restart DH completely from the system tray afterward. If files are locked, close both DDO and DH and copy the three runtime files manually into `%APPDATA%\Dungeon Helper\plugins\HealersHelper\`, preserving your settings file (`healers-helper.json`).
+
+In the **DDO Healer's Helper** control panel:
+- **Toggle ON/OFF (`Ctrl+Shift+K`):** Master enable/disable switch. When OFF, all alerts, auto-targeting, sounds, and save windows pause, while `Ctrl+Shift+K` remains active so you can re-enable from inside DDO.
+- **Mode (`Party`, `SinglePlayer`, `Off`):** `Party` watches all party/raid members plus yourself (`GetPartyMembers()` + self); `SinglePlayer` watches one focused player; `Off` silences alerts.
+- **Focus Target (`Ctrl+Shift+H`):** Locks `SinglePlayer` mode onto your currently selected DDO target (`GetSelectedObjectId()`), flashing a brief `WATCHING: <Name>` notice.
+- **Cycle Mode (`Ctrl+Shift+J`):** Toggles between `Party` and `SinglePlayer` when enabled.
+- **Target Critical (`Ctrl+Shift+T`):** Immediately selects the lowest/down watched player via `SelectObject(ulong)` (or `PartyKeyOnly` keybind if configured).
+- **Preview Banner / Move Banner / Move Status (20s):** Previews the flashing center banner and lets you drag either the center banner (`HudX`, `HudY`) or the compact status HUD (`StatusHudX`, `StatusHudY`). Close the DH panel during play; both HUD windows remain active.
+- **Reset Saved:** Resets the persistent `People Saved` counter back to `0`.
+
+## Development and release
+
+See [GITHUB.md](../../GITHUB.md) for the CI workflow. Local Windows commands:
+
+```powershell
+py -3 -m unittest discover -s ci -p "test_*.py" -v
+dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
+.\build.ps1 -DungeonHelperDir "$env:APPDATA\Dungeon Helper" -Version 1.0.0
+```
+
+First stable release is `1.0.0`. Publication triggers only when tracked C# plugin source (`src/**/*.cs`) changes relative to the latest reachable stable tag, evaluated across the full unreleased range. Docs/tests/CI/metadata changes alone build artifacts with `publish: false`. Any failing test blocks release.
+
+## Diagnose by symptom
+
+| Symptom | First checks |
+| --- | --- |
+| Installed but no plugin icon | Check DH logs, verify `VoK.Sdk.dll` is `4.2.1.0`, remove duplicate DLL copies, confirm 3-entry runtime ZIP |
+| Toolbar or settings buttons clipped | Record Windows display scaling and version; run `WindowsSmoke` to verify `FitToolbarWidth` and autosized rows |
+| Banner missing or duplicated under Lossless Scaling | Check `Capture exclusion: ON` in status; test `Preview Banner` with LS off, then WGC and DXGI independently with DH panel closed |
+| Self or raid member missing | Confirm DH `GetCurrentCharacterId()` / `GetPartyMembers()` status in panel; verify `Mode` is `Party` (not `SinglePlayer` / `Off`) |
+| Auto-target not switching | Check `TargetingStatus` in panel; `Auto` / `SdkSelectOnly` uses `SelectObject(ulong)` when target is in entity range (`!IsDeleted`); `PartyKeyOnly` requires keybinds in `ddo.keymap` (slots 7–12 and self are unbound by default) |
+| Hotkeys not firing when DH hotkeys are off | Ensure DDO, DH, or Lossless Scaling is the foreground window so the `GetAsyncKeyState` poll is active |
+| CI fails fetching SDK | Verify upstream `DungeonHelper.msi` and `ci/sdk-lock.json` hashes deliberately; never bypass hash checks |
+
+## Live Windows integration checklist (required on target PC)
+
+Because live DDO and Lossless Scaling cannot be automated in headless CI:
+1. With LS off, verify `Preview Banner`, `Move Banner (20s)`, and exact integer `FontSizePixels` save/reopen.
+2. Test solo HP drop, party/raid HP drop below threshold, recovery above `Threshold + Hysteresis`, and `CriticalDown` (incapacitated negative HP / dead) timeout and recovery.
+3. Test `Focus Target` (`Ctrl+Shift+H`), `Cycle Mode` (`Ctrl+Shift+J`), and `Target Critical` (`Ctrl+Shift+T`) with DH `HotKeysEnabled` both on and off.
+4. Close the DH panel and test `Preview Banner` with Lossless Scaling on under both **WGC** and **DXGI** capture modes; confirm one unscaled banner above LS and click-through input to DDO.
+
+Agent counterpart: [Workflow](../agents/WORKFLOW.md).

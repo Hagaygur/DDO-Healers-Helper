@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>12.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="WindowsSmoke/**/*.cs" />
+    <Compile Include="../src/Contracts.cs" Link="Contracts.cs" />
+    <Compile Include="../src/Settings.cs" Link="Settings.cs" />
+    <Compile Include="../src/HotkeyMatcher.cs" Link="HotkeyMatcher.cs" />
+    <Compile Include="../src/PeopleSavedTracker.cs" Link="PeopleSavedTracker.cs" />
+    <Compile Include="../src/HealerState.cs" Link="HealerState.cs" />
+    <Compile Include="../src/BannerPresentation.cs" Link="BannerPresentation.cs" />
+    <Compile Include="../src/StatusHudPresentation.cs" Link="StatusHudPresentation.cs" />
+  </ItemGroup>
+</Project>
