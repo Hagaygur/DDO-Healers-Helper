@@ -3,9 +3,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
-using System.IO;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Windows.Forms;
 using VoK.Sdk.Plugins;
 
@@ -88,198 +85,15 @@ internal sealed class HealerControlForm : Form
         public override string ToString() => string.IsNullOrWhiteSpace(Name) ? $"ID {Id}" : Name;
     }
 
-    private sealed class OfflineSettingsEngineView(string settingsFolder) : IHealerEngineView
-    {
-        private static readonly JsonSerializerOptions Json = new()
-        {
-            WriteIndented = true,
-            PropertyNameCaseInsensitive = true,
-            Converters = { new JsonStringEnumConverter() }
-        };
-
-        private Settings? _cached;
-        private DateTime _cachedWriteUtc = DateTime.MinValue;
-        private long _cachedLength = -1;
-        private int _revision = 1;
-
-        public string SettingsFolder { get; } = settingsFolder;
-        private string ConfigPath => Path.Combine(SettingsFolder, "healers-helper.json");
-
-        public IntPtr GameWindow => IntPtr.Zero;
-
-        public int SettingsRevision
-        {
-            get
-            {
-                _ = EnsureLoaded();
-                return _revision;
-            }
-        }
-
-        public int PeopleSaved => EnsureLoaded().PeopleSaved;
-
-        public Settings GetSettings() => EnsureLoaded().Copy();
-
-        public void SaveSettings(Settings settings)
-        {
-            var copy = settings.Copy();
-            var live = EnsureLoaded();
-            copy.CopyLiveStatsFrom(live);
-            Persist(copy);
-        }
-
-        public void SavePosition(double x, double y)
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.HudX = x;
-            copy.HudY = y;
-            Persist(copy);
-        }
-
-        public void SaveBannerLayout(double x, double y, int fontSizePixels, int bannerOpacity)
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.HudX = x;
-            copy.HudY = y;
-            copy.FontSizePixels = fontSizePixels;
-            copy.BannerOpacity = bannerOpacity;
-            Persist(copy);
-        }
-
-        public void SaveStatusPosition(double x, double y)
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.StatusHudX = x;
-            copy.StatusHudY = y;
-            Persist(copy);
-        }
-
-        public AlertBannerView View()
-        {
-            var s = EnsureLoaded();
-            return new AlertBannerView(
-                BannerSeverity.None,
-                s.Mode,
-                "",
-                "",
-                0,
-                null,
-                "",
-                null,
-                0,
-                "Waiting for game connection…",
-                "Targeting: idle",
-                s.PluginEnabled,
-                s.PeopleSaved);
-        }
-
-        public WatchedMemberSnapshot[] GetMembers() => Array.Empty<WatchedMemberSnapshot>();
-
-        public void TogglePluginEnabled()
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.PluginEnabled = !copy.PluginEnabled;
-            Persist(copy);
-        }
-
-        public void ToggleBannerHud()
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.HudEnabled = !copy.HudEnabled;
-            Persist(copy);
-        }
-
-        public void ResetPeopleSaved()
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.ResetLiveStats();
-            Persist(copy);
-        }
-
-        public string GetChatScorecard() => HealerStats.FormatChatScorecard(EnsureLoaded());
-
-        public bool CopyChatScorecard() => HealerEngine.TryCopyTextToClipboardSta(GetChatScorecard());
-
-        public bool FocusCurrentTarget() => false;
-
-        public void CycleMode()
-        {
-            var copy = EnsureLoaded().Copy();
-            copy.Mode = copy.Mode == TrackingMode.Party ? TrackingMode.SinglePlayer : TrackingMode.Party;
-            Persist(copy);
-        }
-
-        public bool TargetCriticalNow() => false;
-
-        public void Report(string message) { }
-
-        private Settings EnsureLoaded()
-        {
-            try
-            {
-                var info = new FileInfo(ConfigPath);
-                if (!info.Exists)
-                {
-                    if (_cached is null || _cachedLength != -1)
-                    {
-                        _cached = new Settings();
-                        _cachedWriteUtc = DateTime.MinValue;
-                        _cachedLength = -1;
-                        _revision++;
-                    }
-                    return _cached;
-                }
-
-                if (_cached is not null
-                    && info.LastWriteTimeUtc == _cachedWriteUtc
-                    && info.Length == _cachedLength)
-                {
-                    return _cached;
-                }
-
-                var loaded = JsonSerializer.Deserialize<Settings>(File.ReadAllText(ConfigPath), Json) ?? new Settings();
-                loaded.Validate();
-                _cached = loaded;
-                _cachedWriteUtc = info.LastWriteTimeUtc;
-                _cachedLength = info.Length;
-                _revision++;
-                return _cached;
-            }
-            catch
-            {
-                return _cached ??= new Settings();
-            }
-        }
-
-        private void Persist(Settings updated)
-        {
-            updated.Validate();
-            _cached = updated.Copy();
-            _revision++;
-            try
-            {
-                var store = new SettingsStore(SettingsFolder);
-                store.Save(updated);
-                var info = new FileInfo(store.ConfigPath);
-                if (info.Exists)
-                {
-                    _cachedWriteUtc = info.LastWriteTimeUtc;
-                    _cachedLength = info.Length;
-                }
-            }
-            catch { }
-        }
-    }
-
     private readonly HealersHelperPlugin _plugin;
     private readonly Font _headerFont = new("Segoe UI", 9.5f, FontStyle.Bold);
     private readonly ToolTip _toolTip = new() { ShowAlways = true };
     private readonly Label _pluginStateLabel;
     private readonly Label _bannerStateLabel;
     private readonly Label _peopleSavedLabel;
-    private readonly Label _gamificationLabel = new() { Name = "GamificationSummaryLabel", AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(215, 225, 240) };
-    private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2) };
-    private readonly Label _targetingLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(180, 210, 235) };
+    private readonly Label _gamificationLabel = new() { Name = "GamificationSummaryLabel", AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(226, 183, 91) };
+    private readonly Label _statusLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 2, 2, 2), ForeColor = Color.FromArgb(236, 238, 242) };
+    private readonly Label _targetingLabel = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(2, 0, 2, 4), ForeColor = Color.FromArgb(148, 200, 245) };
     private readonly Label _compatibilityNoteLabel = new()
     {
         Name = "CompatibilityNoteLabel",
@@ -287,11 +101,11 @@ internal sealed class HealerControlForm : Form
         AutoSize = true,
         MaximumSize = new Size(348, 0),
         Margin = new Padding(2, 4, 2, 2),
-        ForeColor = Color.FromArgb(165, 180, 200)
+        ForeColor = Color.FromArgb(159, 170, 192)
     };
-    private readonly ComboBox _modeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 115 };
-    private readonly ComboBox _playerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 175 };
-    private readonly ListBox _membersList = new() { Dock = DockStyle.Top, Height = 96, IntegralHeight = false, BackColor = Color.FromArgb(18, 22, 29), ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
+    private readonly ComboBox _modeCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 115, BackColor = Color.FromArgb(26, 29, 36), ForeColor = Color.FromArgb(236, 238, 242), FlatStyle = FlatStyle.Flat };
+    private readonly ComboBox _playerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 175, BackColor = Color.FromArgb(26, 29, 36), ForeColor = Color.FromArgb(236, 238, 242), FlatStyle = FlatStyle.Flat };
+    private readonly ListBox _membersList = new() { Dock = DockStyle.Top, Height = 96, IntegralHeight = false, BackColor = Color.FromArgb(20, 23, 30), ForeColor = Color.FromArgb(236, 238, 242), BorderStyle = BorderStyle.FixedSingle };
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 250 };
 
     private readonly Button _toggleBtn;
@@ -300,10 +114,13 @@ internal sealed class HealerControlForm : Form
     private readonly Button _focusBtn;
     private readonly Button _targetCritBtn;
     private readonly Button _moveBannerBtn;
+    private readonly Button _mutePlayerBtn;
     private readonly Button _resetSavedBtn;
     private readonly Button _copyScorecardBtn;
 
     private OfflineSettingsEngineView? _offlineView;
+    private WatchedMemberSnapshot[] _displayedMembers = Array.Empty<WatchedMemberSnapshot>();
+    private UiTheme? _appliedTheme;
     private bool _updatingSelectors;
     private int _lastTooltipRevision = -2;
     private bool _lastTooltipLiveEngine;
@@ -322,7 +139,7 @@ internal sealed class HealerControlForm : Form
             string folder = _plugin.SettingsFolder;
             if (_offlineView is null || !string.Equals(_offlineView.SettingsFolder, folder, StringComparison.Ordinal))
             {
-                _offlineView = new OfflineSettingsEngineView(folder);
+                _offlineView = new OfflineSettingsEngineView(folder, HealerEngine.TryCopyTextToClipboardSta);
             }
 
             return _offlineView;
@@ -367,8 +184,8 @@ internal sealed class HealerControlForm : Form
         Size = new Size(440, 410);
         MinimumSize = new Size(380, 320);
         AutoScroll = true;
-        BackColor = Color.FromArgb(24, 28, 36);
-        ForeColor = Color.White;
+        BackColor = Color.FromArgb(17, 19, 24);
+        ForeColor = Color.FromArgb(236, 238, 242);
 
         var layout = new TableLayoutPanel
         {
@@ -420,6 +237,7 @@ internal sealed class HealerControlForm : Form
         var previewBtn = MakeActionButton("PreviewBannerButton", "Preview Banner");
         _moveBannerBtn = MakeActionButton("MoveBannerButton", "Move / Resize Banner");
         var moveStatusBtn = MakeActionButton("MoveStatusButton", "Move Status");
+        _mutePlayerBtn = MakeActionButton("MutePlayerButton", "Mute Selected");
         _copyScorecardBtn = MakeActionButton("CopyScorecardButton", "Copy Chat Card");
         _resetSavedBtn = MakeActionButton("ResetSavedButton", "Reset Saved");
         var settingsBtn = MakeActionButton("SettingsButton", "Settings...");
@@ -452,6 +270,8 @@ internal sealed class HealerControlForm : Form
         previewBtn.Click += (_, _) => _plugin.Hud?.Preview();
         _moveBannerBtn.Click += (_, _) => _plugin.Hud?.Move();
         moveStatusBtn.Click += (_, _) => _plugin.Hud?.MoveStatus();
+        _mutePlayerBtn.Click += (_, _) => ToggleMuteSelectedMember();
+        _membersList.DoubleClick += (_, _) => ToggleMuteSelectedMember();
         _copyScorecardBtn.Click += (_, _) =>
         {
             ActiveView.CopyChatScorecard();
@@ -472,7 +292,7 @@ internal sealed class HealerControlForm : Form
         buttons.Controls.AddRange(new Control[]
         {
             _toggleBtn, _toggleBannerBtn, _cycleBtn, _focusBtn, _targetCritBtn, previewBtn,
-            _moveBannerBtn, moveStatusBtn, _copyScorecardBtn, _resetSavedBtn, settingsBtn
+            _moveBannerBtn, moveStatusBtn, _mutePlayerBtn, _copyScorecardBtn, _resetSavedBtn, settingsBtn
         });
         layout.Controls.Add(buttons, 0, 2);
 
@@ -537,13 +357,35 @@ internal sealed class HealerControlForm : Form
         RefreshState();
     }
 
-    private static Button MakeActionButton(string name, string text) => new()
+    private static Button MakeActionButton(string name, string text)
     {
-        Name = name,
-        Text = text,
-        AutoSize = true,
-        AutoSizeMode = AutoSizeMode.GrowAndShrink
-    };
+        var btn = new Button
+        {
+            Name = name,
+            Text = text,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(34, 38, 48),
+            ForeColor = Color.FromArgb(236, 238, 242),
+            UseVisualStyleBackColor = false
+        };
+        btn.FlatAppearance.BorderColor = Color.FromArgb(72, 79, 98);
+        btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(48, 54, 68);
+        btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(62, 54, 36);
+        return btn;
+    }
+
+    private void ToggleMuteSelectedMember()
+    {
+        int idx = _membersList.SelectedIndex;
+        if (idx < 0 || idx >= _displayedMembers.Length)
+            return;
+
+        var member = _displayedMembers[idx];
+        ActiveView.ToggleMutePlayer(member.Id, member.Name);
+        RefreshState();
+    }
 
     private void ApplyTooltips(Settings settings, int revision, bool isLiveEngine)
     {
@@ -560,8 +402,64 @@ internal sealed class HealerControlForm : Form
         _toolTip.SetToolTip(_focusBtn, WithChord("Focus currently selected DDO player", settings.FocusTargetHotkey));
         _toolTip.SetToolTip(_targetCritBtn, WithChord("Select lowest/critical watched player now", settings.TargetCriticalHotkey));
         _toolTip.SetToolTip(_moveBannerBtn, "Unlock banner for 20s: drag center to move, drag edges/corners or wheel to resize, Ctrl+wheel for opacity");
+        _toolTip.SetToolTip(_mutePlayerBtn, "Mute/unmute selected party member for this session (e.g. Pale Master undead shroud or self-sufficient tank; or double-click row)");
         _toolTip.SetToolTip(_resetSavedBtn, WithChord("Reset People Saved and all healer records", settings.ResetSavedHotkey));
         _toolTip.SetToolTip(_copyScorecardBtn, WithChord("Copy ASCII healer scorecard for DDO chat", settings.CopyScorecardHotkey));
+    }
+
+    private void ApplyThemeIfChanged(UiTheme theme)
+    {
+        if (_appliedTheme == theme)
+            return;
+
+        _appliedTheme = theme;
+        var pal = UiThemePalette.For(theme);
+        Color baseBg = Color.FromArgb(pal.SurfaceBaseArgb);
+        Color cardBg = Color.FromArgb(pal.SurfaceContainerArgb);
+        Color btnBg = Color.FromArgb(pal.SurfaceControlArgb);
+        Color hoverBg = Color.FromArgb(pal.SurfaceHoverArgb);
+        Color outline = Color.FromArgb(pal.OutlineArgb);
+        Color primary = Color.FromArgb(pal.PrimaryArgb);
+        Color secondary = Color.FromArgb(pal.SecondaryArgb);
+        Color textPrimary = Color.FromArgb(pal.TextPrimaryArgb);
+        Color textMuted = Color.FromArgb(pal.TextMutedArgb);
+
+        BackColor = baseBg;
+        ForeColor = textPrimary;
+        _gamificationLabel.ForeColor = primary;
+        _statusLabel.ForeColor = textPrimary;
+        _targetingLabel.ForeColor = secondary;
+        _compatibilityNoteLabel.ForeColor = textMuted;
+        _modeCombo.BackColor = cardBg;
+        _modeCombo.ForeColor = textPrimary;
+        _playerCombo.BackColor = cardBg;
+        _playerCombo.ForeColor = textPrimary;
+        _membersList.BackColor = cardBg;
+        _membersList.ForeColor = textPrimary;
+
+        void StyleChildren(Control parent)
+        {
+            foreach (Control c in parent.Controls)
+            {
+                if (c is Button btn)
+                {
+                    btn.BackColor = btnBg;
+                    btn.ForeColor = textPrimary;
+                    btn.FlatAppearance.BorderColor = outline;
+                    btn.FlatAppearance.MouseOverBackColor = hoverBg;
+                    btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(
+                        (btnBg.R + primary.R) / 2,
+                        (btnBg.G + primary.G) / 2,
+                        (btnBg.B + primary.B) / 2);
+                }
+                else if (c.HasChildren)
+                {
+                    StyleChildren(c);
+                }
+            }
+        }
+
+        StyleChildren(this);
     }
 
     private void OnModeChanged()
@@ -656,6 +554,7 @@ internal sealed class HealerControlForm : Form
         var viewEngine = ActiveView;
         int rev = viewEngine.SettingsRevision;
         var settings = viewEngine.GetSettings();
+        ApplyThemeIfChanged(settings.Theme);
         ApplyTooltips(settings, rev, liveEngine is not null);
 
         var view = viewEngine.View();
@@ -799,6 +698,7 @@ internal sealed class HealerControlForm : Form
 
     private void UpdateMembersList(WatchedMemberSnapshot[] members)
     {
+        _displayedMembers = members;
         if (members.Length == 0)
         {
             if (!string.Equals(_lastMemberSignature, "(none)", StringComparison.Ordinal))
@@ -813,17 +713,22 @@ internal sealed class HealerControlForm : Form
             return;
         }
 
+        var viewEngine = ActiveView;
         var lines = new string[members.Length];
         for (int i = 0; i < members.Length; i++)
         {
             var m = members[i];
-            string slot = m.PartySlotIndex == 0 ? "Self" : $"F{m.PartySlotIndex}";
-            string state = m.IsDeadOrDown
-                ? "DOWN"
-                : !m.Connected
-                    ? "OFFLINE"
-                    : $"{m.Percent.ToString("0", CultureInfo.InvariantCulture)}%";
-            lines[i] = $"[{slot}] {m.Name}: {m.HitPoints}/{m.MaxHitPoints} ({state})";
+            string slot = m.PartySlotIndex == 0 ? "Self" : m.PartySlotIndex > 0 ? $"F{m.PartySlotIndex}" : "Ext";
+            string state = m.IsTrulyDead
+                ? "DEAD"
+                : m.IsIncapacitated
+                    ? "INCAP"
+                    : !m.Connected
+                        ? "OFFLINE"
+                        : $"{m.Percent.ToString("0", CultureInfo.InvariantCulture)}%";
+            string thp = m.TempHitPoints > 0 ? $" +{m.TempHitPoints} THP" : "";
+            string muted = viewEngine.IsPlayerMuted(m.Id, m.Name) ? " [MUTED]" : "";
+            lines[i] = $"[{slot}] {m.Name}: {m.HitPoints}/{m.MaxHitPoints}{thp} ({state}){muted}";
         }
 
         string sig = string.Join("\n", lines);
@@ -832,6 +737,7 @@ internal sealed class HealerControlForm : Form
             return;
         }
 
+        int prevSelected = _membersList.SelectedIndex;
         _membersList.BeginUpdate();
         _membersList.Items.Clear();
         foreach (var line in lines)
@@ -839,6 +745,10 @@ internal sealed class HealerControlForm : Form
             _membersList.Items.Add(line);
         }
 
+        if (prevSelected >= 0 && prevSelected < _membersList.Items.Count)
+        {
+            _membersList.SelectedIndex = prevSelected;
+        }
         _membersList.EndUpdate();
         _lastMemberSignature = sig;
     }

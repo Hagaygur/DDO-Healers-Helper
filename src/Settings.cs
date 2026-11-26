@@ -23,6 +23,7 @@ internal sealed class Settings
     public bool PluginEnabled { get; set; } = true;
     public TrackingMode Mode { get; set; } = TrackingMode.Party;
     public bool IncludeSelfInPartyMode { get; set; } = true;
+    public bool IncludeTempHpInThreshold { get; set; } = false;
     public bool SuppressAlertsInTown { get; set; } = false;
     public ulong FocusedPlayerId { get; set; }
     public string FocusedPlayerName { get; set; } = "";
@@ -33,6 +34,7 @@ internal sealed class Settings
     public int FontSizePixels { get; set; } = 56;
     public int BannerOpacity { get; set; } = 235;
     public bool FlashBanner { get; set; } = true;
+    public bool ShowBannerHpBar { get; set; } = true;
     public int FlashIntervalMs { get; set; } = 250;
     public bool SoundOnAlert { get; set; } = false;
     public bool HudEnabled { get; set; } = true;
@@ -50,6 +52,16 @@ internal sealed class Settings
     public int StatusFontSizePixels { get; set; } = 14;
     public double StatusHudX { get; set; } = 0.50;
     public double StatusHudY { get; set; } = 0.76;
+    public UiTheme Theme { get; set; } = UiTheme.EberronGold;
+
+    // DH 5 Beta Triage Raid HUD & Targetless Quick-Cast (ignored cleanly in DH 4)
+    public bool RaidHudEnabled { get; set; } = false;
+    public double RaidHudX { get; set; } = 0.02;
+    public double RaidHudY { get; set; } = 0.25;
+    public int QuickHealHotbar { get; set; } = 0;
+    public int QuickHealSlot { get; set; } = 1;
+    public int QuickRaiseHotbar { get; set; } = 0;
+    public int QuickRaiseSlot { get; set; } = 1;
 
     // Clutch save tuning
     public double SaveWindowSeconds { get; set; } = 5.0;
@@ -80,6 +92,7 @@ internal sealed class Settings
     public HotkeyBinding FocusTargetHotkey { get; set; } = DefaultFocusTargetHotkey;
     public HotkeyBinding ToggleModeHotkey { get; set; } = DefaultToggleModeHotkey;
     public HotkeyBinding TargetCriticalHotkey { get; set; } = DefaultTargetCriticalHotkey;
+    public HotkeyBinding QuickCastCriticalHotkey { get; set; } = HotkeyBinding.Empty;
     public HotkeyBinding ResetSavedHotkey { get; set; } = HotkeyBinding.Empty;
     public HotkeyBinding CopyScorecardHotkey { get; set; } = HotkeyBinding.Empty;
 
@@ -90,6 +103,7 @@ internal sealed class Settings
             PluginEnabled = PluginEnabled,
             Mode = Mode,
             IncludeSelfInPartyMode = IncludeSelfInPartyMode,
+            IncludeTempHpInThreshold = IncludeTempHpInThreshold,
             SuppressAlertsInTown = SuppressAlertsInTown,
             FocusedPlayerId = FocusedPlayerId,
             FocusedPlayerName = FocusedPlayerName,
@@ -100,6 +114,7 @@ internal sealed class Settings
             FontSizePixels = FontSizePixels,
             BannerOpacity = BannerOpacity,
             FlashBanner = FlashBanner,
+            ShowBannerHpBar = ShowBannerHpBar,
             FlashIntervalMs = FlashIntervalMs,
             SoundOnAlert = SoundOnAlert,
             HudEnabled = HudEnabled,
@@ -117,6 +132,14 @@ internal sealed class Settings
             StatusFontSizePixels = StatusFontSizePixels,
             StatusHudX = StatusHudX,
             StatusHudY = StatusHudY,
+            Theme = Theme,
+            RaidHudEnabled = RaidHudEnabled,
+            RaidHudX = RaidHudX,
+            RaidHudY = RaidHudY,
+            QuickHealHotbar = QuickHealHotbar,
+            QuickHealSlot = QuickHealSlot,
+            QuickRaiseHotbar = QuickRaiseHotbar,
+            QuickRaiseSlot = QuickRaiseSlot,
             SaveWindowSeconds = SaveWindowSeconds,
             SelfCastWindowSeconds = SelfCastWindowSeconds,
             MinHealDelta = MinHealDelta,
@@ -131,6 +154,7 @@ internal sealed class Settings
             FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey),
             ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey),
             TargetCriticalHotkey = NormalizeHotkey(TargetCriticalHotkey),
+            QuickCastCriticalHotkey = NormalizeHotkey(QuickCastCriticalHotkey),
             ResetSavedHotkey = NormalizeHotkey(ResetSavedHotkey),
             CopyScorecardHotkey = NormalizeHotkey(CopyScorecardHotkey)
         };
@@ -183,6 +207,7 @@ internal sealed class Settings
     {
         if (!Enum.IsDefined(Mode)) Mode = TrackingMode.Party;
         if (!Enum.IsDefined(TargetingMethod)) TargetingMethod = TargetMethod.Auto;
+        if (!Enum.IsDefined(Theme)) Theme = UiTheme.EberronGold;
         FocusedPlayerName = (FocusedPlayerName ?? "").Trim();
         HpThresholdPercent = Math.Clamp(HpThresholdPercent, 5, 95);
         RecoveryHysteresisPercent = Math.Clamp(RecoveryHysteresisPercent, 0, 20);
@@ -202,6 +227,12 @@ internal sealed class Settings
         StatusFontSizePixels = Math.Clamp(StatusFontSizePixels, 9, 48);
         StatusHudX = double.IsFinite(StatusHudX) ? Math.Clamp(StatusHudX, 0.0, 1.0) : 0.50;
         StatusHudY = double.IsFinite(StatusHudY) ? Math.Clamp(StatusHudY, 0.0, 1.0) : 0.76;
+        RaidHudX = double.IsFinite(RaidHudX) ? Math.Clamp(RaidHudX, 0.0, 1.0) : 0.02;
+        RaidHudY = double.IsFinite(RaidHudY) ? Math.Clamp(RaidHudY, 0.0, 1.0) : 0.25;
+        QuickHealHotbar = Math.Clamp(QuickHealHotbar, 0, 20);
+        QuickHealSlot = Math.Clamp(QuickHealSlot, 1, 10);
+        QuickRaiseHotbar = Math.Clamp(QuickRaiseHotbar, 0, 20);
+        QuickRaiseSlot = Math.Clamp(QuickRaiseSlot, 1, 10);
 
         SaveWindowSeconds = double.IsFinite(SaveWindowSeconds)
             ? Math.Clamp(SaveWindowSeconds, 1.0, 15.0)
@@ -255,6 +286,7 @@ internal sealed class Settings
         FocusTargetHotkey = NormalizeHotkey(FocusTargetHotkey);
         ToggleModeHotkey = NormalizeHotkey(ToggleModeHotkey);
         TargetCriticalHotkey = NormalizeHotkey(TargetCriticalHotkey);
+        QuickCastCriticalHotkey = NormalizeHotkey(QuickCastCriticalHotkey);
         ResetSavedHotkey = NormalizeHotkey(ResetSavedHotkey);
         CopyScorecardHotkey = NormalizeHotkey(CopyScorecardHotkey);
     }

@@ -369,8 +369,10 @@ internal sealed class StatusHudWindow : Form
 
             if (frame.ShowDragBox)
             {
-                using var plate = new SolidBrush(Color.FromArgb(205, 16, 20, 28));
-                using var border = new Pen(Color.FromArgb(255, 86, 168, 255), 1.5f);
+                var pal = UiThemePalette.For(_settings.Theme);
+                Color baseCol = Color.FromArgb(pal.SurfaceBaseArgb);
+                using var plate = new SolidBrush(Color.FromArgb(215, baseCol.R, baseCol.G, baseCol.B));
+                using var border = new Pen(Color.FromArgb(pal.PrimaryArgb), 1.5f);
                 g.FillRectangle(plate, 0, 0, width, height);
                 g.DrawRectangle(border, 0.75f, 0.75f, width - 1.5f, height - 1.5f);
             }

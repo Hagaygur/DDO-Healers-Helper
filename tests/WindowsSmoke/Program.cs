@@ -266,6 +266,7 @@ internal static class Program
                 VerifyCompatibilityNoteLabel(lsNote, dialog);
 
                 var includeSelfBox = (CheckBox)dialog.Controls.Find("IncludeSelfCheckBox", true).Single();
+                var includeTempHpBox = (CheckBox)dialog.Controls.Find("IncludeTempHpCheckBox", true).Single();
                 var suppressTownBox = (CheckBox)dialog.Controls.Find("SuppressInTownCheckBox", true).Single();
                 var maxAlertNumeric = (NumericUpDown)dialog.Controls.Find("MaxAlertSecondsNumeric", true).Single();
                 var saveWinNumeric = (NumericUpDown)dialog.Controls.Find("SaveWindowSecondsNumeric", true).Single();
@@ -276,8 +277,11 @@ internal static class Program
                 var hudEnabledBox = (CheckBox)dialog.Controls.Find("HudEnabledCheckBox", true).Single();
                 var bannerOpacityNumeric = (NumericUpDown)dialog.Controls.Find("BannerOpacityNumeric", true).Single();
                 var flashBannerBox = (CheckBox)dialog.Controls.Find("FlashBannerCheckBox", true).Single();
+                var showHpBarBox = (CheckBox)dialog.Controls.Find("ShowBannerHpBarCheckBox", true).Single();
                 var statusHudEnabledBox = (CheckBox)dialog.Controls.Find("StatusHudEnabledCheckBox", true).Single();
                 var statusFontBox = (TextBox)dialog.Controls.Find("StatusFontSizeTextBox", true).Single();
+                var themeCombo = (ComboBox)dialog.Controls.Find("UiThemeCombo", true).Single();
+                var raidKeymapLabel = (Label)dialog.Controls.Find("RaidKeymapReadinessLabel", true).Single();
                 var lowBgColorBtn = (Button)dialog.Controls.Find("LowHpBgColorButton", true).Single();
                 var resetColorsBtn = (Button)dialog.Controls.Find("ResetBannerColorsButton", true).Single();
                 var toggleHotkeyBox = (TextBox)dialog.Controls.Find("TogglePluginHotkeyBox", true).Single();
@@ -350,7 +354,19 @@ internal static class Program
                 setBannerColorHex.Invoke(dialog, new object[] { "FlashAltBgColorButton", "#10141C" });
                 _ = CheckLayoutControls(dialog, dialog);
 
+                // Exercise all 3 DDO x M3 themes in SettingsDialog without clipping.
+                if (themeCombo.Items.Count != 3 || !raidKeymapLabel.Visible || !raidKeymapLabel.Text.Contains("Raid F-keys", StringComparison.Ordinal))
+                    throw new Exception($"Expected 3 UiTheme options and visible RaidKeymapReadinessLabel, got items={themeCombo.Items.Count}, text='{raidKeymapLabel.Text}'");
+                for (int ti = 0; ti < 3; ti++)
+                {
+                    themeCombo.SelectedIndex = ti;
+                    Application.DoEvents();
+                    _ = CheckLayoutControls(dialog, dialog);
+                }
+                themeCombo.SelectedIndex = 1; // CannithArcane for persistence check
+
                 includeSelfBox.Checked = false;
+                includeTempHpBox.Checked = true;
                 suppressTownBox.Checked = true;
                 maxAlertNumeric.Value = 15;
                 saveWinNumeric.Value = 7.5m;
@@ -360,6 +376,7 @@ internal static class Program
                 showRankBox.Checked = true;
                 bannerOpacityNumeric.Value = 35; // Exercises 20..255 range below old 80 floor!
                 flashBannerBox.Checked = false;
+                showHpBarBox.Checked = false;
                 statusHudEnabledBox.Checked = true;
                 statusFontBox.Text = "16";
                 fontBox.Text = "68";
@@ -405,7 +422,10 @@ internal static class Program
                     || root.GetProperty("BannerTextHex").GetString() != "#F0F4FF"
                     || root.GetProperty("FlashAltBgHex").GetString() != "#10141C"
                     || root.GetProperty("FlashBanner").GetBoolean() != false
+                    || root.GetProperty("ShowBannerHpBar").GetBoolean() != false
                     || root.GetProperty("IncludeSelfInPartyMode").GetBoolean() != false
+                    || root.GetProperty("IncludeTempHpInThreshold").GetBoolean() != true
+                    || root.GetProperty("Theme").GetString() != "CannithArcane"
                     || root.GetProperty("SuppressAlertsInTown").GetBoolean() != true
                     || root.GetProperty("MaxAlertSeconds").GetInt32() != 15
                     || Math.Abs(root.GetProperty("SaveWindowSeconds").GetDouble() - 7.5) > 0.001

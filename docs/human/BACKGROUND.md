@@ -1,25 +1,24 @@
 # Background and requirements
 
-DDO Healer's Helper monitors Dungeons & Dragons Online (DDO) party, raid, solo, and focused single-player hit points inside Dungeon Helper (DH). When a watched player drops below a configured HP percentage or goes incapacitated/dead, it flashes a large, high-contrast, click-through banner near the center of the screen and can optionally target that player so the healer can heal immediately.
+DDO Healer's Helper monitors Dungeons & Dragons Online (DDO) party, 12-player raid, solo, and focused single-player hit points across **Dungeon Helper 4 (`4.2.x`)** and **Dungeon Helper 5 Beta (`5.0.x`)**. It distinguishes healable **Incapacitated** allies (`0..-9 HP`) from **Dead Soulstones** (`<= -10 HP`), tracks **Temporary HP shields (`HitPoints_Temp`)** and healer clutch saves/prestige ranks, and lets healers recover injured allies without losing awareness or boss targets.
 
-The plugin uses DH's local game-data provider and keymap/selection APIs. It does not automate spell casting, install external overlay services like RTSS, or make network calls.
+The plugin uses DH's local game-data provider and selection/hotbar APIs. It never requires an external overlay executable like RTSS and never makes network calls during gameplay.
 
 ## Why this architecture exists
 
 | Verified constraint / requirement | Resulting design decision |
 | --- | --- |
-| Installed DH supplies `VoK.Sdk.dll` `4.2.1.0` (`DungeonHelper.dll` `4.2.0.146`) | Pin and hash-verify `VoK.Sdk 4.2.1.0` in `ci/sdk-lock.json` rather than upgrading to newer NuGet packages |
-| `GetPartyMembers()` excludes the local player and caches `IPartyMember` getters | Re-poll `GetPartyMembers()` fresh each scan, merge `GetCurrentCharacterId()` / `GetCurrentCharacter()`, and enrich with `GetEntity(id)` |
-| `IPartyMember` omits `LifeState` and temp HP, whereas `IEntity` exposes `LifeState` and signed `Int32` negative HP | Enrich party members via `GetEntity(id)` when in range (`!IsDeleted`), falling back to `IPartyMember` HP when out of range |
-| `SelectObject(ulong)` writes directly to `dndpl.dll` MMF with zero subscription checks, while `ddo.keymap` leaves self and raid slots 7–12 unbound | Prefer `SelectObject(ulong)` (`Auto` / `SdkSelectOnly`); guard `GetSelectedObjectId().GetValueOrDefault() != id` because DH returns `(ulong?)0` when unselected |
-| `EventProvider.KeyDown` stops firing when DH `HotKeysEnabled` is false | Combine `EventProvider.KeyDown` with foreground-gated Win32 `GetAsyncKeyState` edge polling and deduplicate in `HotkeyMatcher` |
-| Hosted DH panels vanish under WGC and duplicate under DXGI in Lossless Scaling | Render in an independent top-level STA window (`WS_EX_LAYERED \| WS_EX_TRANSPARENT \| WS_EX_NOACTIVATE \| WS_EX_TOOLWINDOW`), request `WDA_EXCLUDEFROMCAPTURE` (`0x11`), and reassert `HWND_TOPMOST` |
-| Hosted WinForms panels can clip toolbar icons and buttons at narrow DH widths | Use `FitToolbarWidth()`, `AutoSize` `TableLayoutPanel` rows, and `FlowLayoutPanel` button rows |
-| DH plugin installer requires runtime-only archives | Enforce a 3-entry ZIP (`plugins/HealersHelper/VoK.HealersHelper.{dll,deps.json,metadata}`), DLL first; ship source separately |
+| DH 4 (`net8.0-windows`, `4.2.1.0`, `plugins/HealersHelper/`) and DH 5 Beta (`net10.0` `x64`, `5.3.0.0`, root ZIP + `PluginTrustGate`) are binary- and layout-incompatible | Maintain one shared portable core (`src/*.cs`) linked into `src/` (DH 4) and `src-dh5/` (DH 5 Beta), shipping separate `*-dh4-plugin.zip` and signed `*-dh5-plugin.zip` artifacts |
+| DDO separates healable unconscious allies (`0..-9 HP`, `LifeState.Incapacitated`) from Soulstones (`<= -10 HP`, `LifeState.Dead`), while THP shields (`HitPoints_Temp`) alter real danger | Prioritize Incapacitated > Living Low HP > calm Spectral Violet Soulstones, surface `+N THP` Sovereign Gold shields, and support per-session Mute/Ignore |
+| DH 4 `GetPartyMembers()` excludes self and caches getters; DH 5 `LifeState` (`0x10000E0C`) only hydrates once unless refreshed | Poll fresh each tick, merge self + `GetEntity` (DH 4) or `UpdateProperties([0x10000E0Cu])` + `eventProvider.Party` (DH 5) asynchronously |
+| DH 4 hosted WinForms panels vanish/duplicate under Lossless Scaling; DH 5 injects directly into DX10/11 | DH 4 renders on independent STA layered windows (`WDA_EXCLUDEFROMCAPTURE` + `IsWineRuntime`); DH 5 draws natively inside DDO's frame via `ImGuiNET` |
+| Raid healers hold Boss/Tank hard targets in mouselook | DH 4 uses `SelectObject(ulong)` + 5-rule `TargetRestoreTracker`; DH 5 adds targetless `InvokeHotbar(bar, slot, targetId)` Quick-Heal/Raise (safely disabled by default) |
+| DH 5 `PluginTrustGate` rejects unsigned or non-entitled bundles | Commit only public `ci/Healers Helper.entitlement(.sig)`, sign `VoK.HealersHelper.dll` + `.manifest` ephemerally in `ci/sign_dh5.py`, and keep `*.key`/`*.pfx` strictly out of git |
 
 ## Evidence and platform status
 
-- **Windows 11 live verification:** Tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all OS, GPU, display, or capture configurations), alongside Stage 1 IL/metadata/SHA-256 verification of `VoK.Sdk.dll` (`4.2.1.0`), `DungeonHelper.dll` (`4.2.0.146`), local Windows & WSL builds/tests (233 C# assertions, 25 Python CI checks, 4 Windows smoke suites), and GitHub-hosted Actions (`linux` + `build` + `release` `v1.0.0`–`v1.2.0`).
-- **Linux / Wine / Proton:** Cross-compiles and passes portable C#/Python CI suites natively on Linux (`EnableWindowsTargeting=true` + `msitools`) and includes `IsWineRuntime` User32/GDI32 fallbacks (`wine_get_version`), so it should also work on Linux via Wine/Proton (live Linux gameplay has not yet been tested).
+- **Windows 11 live verification (DH 4):** Tested and confirmed working on live DDO + Dungeon Helper 4 + Lossless Scaling on Windows 11 (not guaranteed on any or all OS, GPU, display, or capture configurations).
+- **DH 5 Beta verification:** Verified locally against DH `5.0.858` / `VoK.Sdk 5.3.0.0` via `PluginTrustGate.Evaluate`, `AuthenticodeVerifier.IsSignatureValid`, `DungeonHelper.App` ZIP installation (`TrustProbe`), and `Dh5Smoke --require-signed`; live DX10/11 gameplay inside DH 5 Beta has not yet been tested here.
+- **Linux / Wine / Proton:** Cross-compiles and passes portable C#, DH 5 `Dh5Smoke`, and Python CI suites natively on Ubuntu in GitHub Actions CI (`EnableWindowsTargeting=true` + `msitools` + `osslsigncode`), with DH 4 `IsWineRuntime` guards (`wine_get_version`) so DH 4 should also work via Wine/Proton (live Linux gameplay untested).
 
-See [Operations](OPERATIONS.md) for the live verification checklist and [References](REFERENCES.md) for external documentation. Agent counterpart: [Context](../agents/CONTEXT.md).
+See [Operations](OPERATIONS.md) for verification checklists and [References](REFERENCES.md) for peer-reviewed HCI citations and SDK docs. Agent counterpart: [Context](../agents/CONTEXT.md).

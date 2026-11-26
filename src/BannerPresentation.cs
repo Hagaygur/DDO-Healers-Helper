@@ -25,7 +25,12 @@ internal readonly record struct BannerFrame(
     bool FlashOn,
     int TextColorArgb,
     int BackgroundColorArgb,
-    int BorderColorArgb);
+    int BorderColorArgb)
+{
+    public bool IsSoulstone { get; init; }
+    public double? HpBarPercent { get; init; }
+    public int TempHitPoints { get; init; }
+}
 
 internal static class BannerPresentation
 {
@@ -36,6 +41,10 @@ internal static class BannerPresentation
     public const int MinBannerOpacity = 20;
     public const int MaxBannerOpacity = 255;
     public const int DefaultBannerOpacity = 235;
+    public const int SoulstoneBgArgb = unchecked((int)0xEE2A1538);
+    public const int SoulstoneBorderArgb = unchecked((int)0xFFD8DCE6);
+    public const int SoulstoneTextArgb = unchecked((int)0xFFEFEAFF);
+    public const int TempHpGoldArgb = unchecked((int)0xFFF5C542);
 
     public static BannerFrame Compute(
         AlertBannerView view,
@@ -92,6 +101,25 @@ internal static class BannerPresentation
         {
             case BannerSeverity.CriticalDown:
             {
+                if (view.IsSoulstone && !(demo && view.Severity != BannerSeverity.CriticalDown))
+                {
+                    // Spectral Violet + Bone-Silver calm alert (non-flashing so soulstones never trigger urgent heal reflexes).
+                    return new BannerFrame(
+                        true,
+                        primary,
+                        secondary,
+                        fontSize,
+                        false,
+                        SoulstoneTextArgb,
+                        ScaleBackgroundAlpha(SoulstoneBgArgb, opacity),
+                        SoulstoneBorderArgb)
+                    {
+                        IsSoulstone = true,
+                        HpBarPercent = settings.ShowBannerHpBar ? 0.0 : null,
+                        TempHitPoints = 0
+                    };
+                }
+
                 string critBgHex = Settings.NormalizeHexColor(settings.CriticalBgHex, Settings.DefaultCriticalBgHex);
                 string critBorderHex = Settings.NormalizeHexColor(settings.CriticalBorderHex, Settings.DefaultCriticalBorderHex);
                 bool defaultCritColors = critBgHex == Settings.DefaultCriticalBgHex
@@ -133,7 +161,15 @@ internal static class BannerPresentation
                     }
                 }
 
-                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border);
+                double? critHpPct = settings.ShowBannerHpBar
+                    ? Math.Clamp(view.AlertPercent ?? (demo ? 28.0 : 0.0), 0.0, 100.0)
+                    : null;
+                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border)
+                {
+                    IsSoulstone = false,
+                    HpBarPercent = critHpPct,
+                    TempHitPoints = Math.Max(0, view.AlertTempHitPoints)
+                };
             }
             case BannerSeverity.LowHp:
             {
@@ -180,7 +216,15 @@ internal static class BannerPresentation
                     }
                 }
 
-                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border);
+                double? lowHpPct = settings.ShowBannerHpBar
+                    ? Math.Clamp(view.AlertPercent ?? 0.0, 0.0, 100.0)
+                    : null;
+                return new BannerFrame(true, primary, secondary, fontSize, flashPhase, text, ScaleBackgroundAlpha(bgBase, opacity), border)
+                {
+                    IsSoulstone = false,
+                    HpBarPercent = lowHpPct,
+                    TempHitPoints = Math.Max(0, view.AlertTempHitPoints)
+                };
             }
             case BannerSeverity.Notice:
                 return new BannerFrame(

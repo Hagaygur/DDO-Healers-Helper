@@ -96,11 +96,24 @@ internal sealed record WatchedMemberSnapshot(
     int PartySlotIndex,
     bool Connected,
     bool IsDeadOrDown,
-    bool IsTrulyDead = false)
+    bool IsTrulyDead = false,
+    int TempHitPoints = 0,
+    int SpellPoints = 0,
+    int MaxSpellPoints = 0)
 {
     public double Percent => MaxHitPoints > 0
         ? Math.Clamp(HitPoints * 100.0 / MaxHitPoints, -999, 100)
         : 100;
+
+    public bool IsIncapacitated => (IsDeadOrDown || (MaxHitPoints > 0 && HitPoints <= 0)) && !IsTrulyDead;
+
+    public double EffectivePercent(bool includeTempHp)
+    {
+        if (!includeTempHp || TempHitPoints <= 0 || HitPoints <= 0 || IsDeadOrDown || MaxHitPoints <= 0)
+            return Percent;
+
+        return Math.Clamp(((long)HitPoints + TempHitPoints) * 100.0 / MaxHitPoints, -999, 100);
+    }
 }
 
 internal sealed record AlertBannerView(
@@ -116,7 +129,12 @@ internal sealed record AlertBannerView(
     string StatusLine,
     string TargetingStatus,
     bool PluginEnabled = true,
-    int PeopleSaved = 0);
+    int PeopleSaved = 0)
+{
+    public bool IsSoulstone { get; init; }
+    public int AlertTempHitPoints { get; init; }
+    public double? AlertEffectivePercent { get; init; }
+}
 
 internal interface IHealerEngineView
 {
@@ -139,6 +157,11 @@ internal interface IHealerEngineView
     void CycleMode();
     bool TargetCriticalNow();
     void Report(string message);
+    bool IsPlayerMuted(ulong id, string? name) => false;
+    bool ToggleMutePlayer(ulong id, string? name) => false;
+    void ClearMutedPlayers() { }
+    IReadOnlyCollection<string> GetMutedPlayerNames() => Array.Empty<string>();
+    string GetRaidKeymapSummary() => "Raid F-keys (7-12): offline (SDK SelectObject handles all 12)";
 }
 
 internal enum TargetActionKind
@@ -165,6 +188,27 @@ internal static class TargetPolicy
         >= 1 and <= 12 => string.Create(CultureInfo.InvariantCulture, $"TARGET_FELLOW_{partySlotIndex}_KEY"),
         _ => null
     };
+
+    public static (int BoundCount, int TotalCount, string Summary) EvaluateRaidKeymapReadiness(Func<string, bool>? isActionBound)
+    {
+        const int total = 6; // Slots 7..12
+        if (isActionBound is null)
+            return (0, total, "Raid F-keys (7-12): offline (SDK SelectObject handles all 12)");
+
+        int bound = 0;
+        for (int slot = 7; slot <= 12; slot++)
+        {
+            string action = PartyActionForSlot(slot)!;
+            if (isActionBound(action))
+                bound++;
+        }
+
+        string summary = bound == total
+            ? $"Raid F-keys (7-12): {bound}/{total} bound (full keymap fallback ready)"
+            : string.Create(CultureInfo.InvariantCulture,
+                $"Raid F-keys (7-12): {bound}/{total} bound (SDK SelectObject covers out-of-keymap slots in range)");
+        return (bound, total, summary);
+    }
 
     public static TargetDecision Evaluate(
         ulong targetId,

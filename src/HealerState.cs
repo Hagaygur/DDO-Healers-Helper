@@ -9,7 +9,15 @@ namespace VoK.HealersHelper;
 // No SDK, WinForms, Win32, or wall-clock dependencies so tests run on Windows and Linux.
 internal sealed class HealerState
 {
-    private sealed record DeadTrack(double FirstDownAt, bool Suppressed);
+    private enum TriageTier
+    {
+        None = 0,
+        SoulstoneDead = 1,
+        LivingLowHp = 2,
+        Incapacitated = 3
+    }
+
+    private sealed record DeadTrack(double FirstDownAt, bool Suppressed, bool WasSoulstone);
 
     private readonly HashSet<ulong> _lowHpActive = new();
     private readonly Dictionary<ulong, double> _lowHpFirstAt = new();
@@ -19,6 +27,7 @@ internal sealed class HealerState
     private bool _wasAlerting;
     private ulong? _lastAlertPlayerId;
     private BannerSeverity _lastAlertSeverity;
+    private bool _lastAlertSoulstone;
 
     private string _noticePrimary = "";
     private string _noticeSecondary = "";
@@ -32,6 +41,7 @@ internal sealed class HealerState
         _wasAlerting = false;
         _lastAlertPlayerId = null;
         _lastAlertSeverity = BannerSeverity.None;
+        _lastAlertSoulstone = false;
         _noticePrimary = "";
         _noticeSecondary = "";
         _noticeUntil = 0;
@@ -50,7 +60,8 @@ internal sealed class HealerState
         double now,
         string statusLine = "",
         string targetingStatus = "",
-        bool inTown = false)
+        bool inTown = false,
+        Func<WatchedMemberSnapshot, bool>? isMuted = null)
     {
         members ??= Array.Empty<WatchedMemberSnapshot>();
         int peopleSaved = Math.Max(0, settings.PeopleSaved);
@@ -101,7 +112,7 @@ internal sealed class HealerState
             return BuildIdleOrNoticeView(settings.Mode, now, townStatus, targetingStatus, true, peopleSaved);
         }
 
-        List<WatchedMemberSnapshot> watched = FilterWatched(members, settings);
+        List<WatchedMemberSnapshot> watched = FilterWatched(members, settings, isMuted);
         var presentIds = new HashSet<ulong>(members.Length);
         foreach (var m in members)
         {
@@ -119,7 +130,7 @@ internal sealed class HealerState
         PruneMissing(_deadTracks, presentIds);
 
         WatchedMemberSnapshot? bestCandidate = null;
-        BannerSeverity bestSeverity = BannerSeverity.None;
+        TriageTier bestTier = TriageTier.None;
         int lowCount = 0;
 
         foreach (var member in watched)
@@ -131,14 +142,20 @@ internal sealed class HealerState
                 continue;
             }
 
-            bool isDown = member.IsDeadOrDown || (member.MaxHitPoints > 0 && member.HitPoints <= 0);
+            bool isDown = member.IsDeadOrDown || member.IsTrulyDead || (member.MaxHitPoints > 0 && member.HitPoints <= 0);
             if (isDown)
             {
                 _lowHpActive.Remove(member.Id);
                 _lowHpFirstAt.Remove(member.Id);
                 if (!_deadTracks.TryGetValue(member.Id, out var dead))
                 {
-                    dead = new DeadTrack(now, settings.DeadAlertSeconds <= 0);
+                    dead = new DeadTrack(now, settings.DeadAlertSeconds <= 0, member.IsTrulyDead);
+                    _deadTracks[member.Id] = dead;
+                }
+                else if (member.IsTrulyDead && !dead.WasSoulstone)
+                {
+                    // Bleed-out transition from healable Incapacitated to Dead Soulstone triggers a fresh RAISE DEAD alert.
+                    dead = new DeadTrack(now, settings.DeadAlertSeconds <= 0, WasSoulstone: true);
                     _deadTracks[member.Id] = dead;
                 }
                 else if (!dead.Suppressed && (now - dead.FirstDownAt) >= settings.DeadAlertSeconds)
@@ -150,10 +167,11 @@ internal sealed class HealerState
                 if (!dead.Suppressed)
                 {
                     lowCount++;
-                    if (IsHigherPriority(member, BannerSeverity.CriticalDown, bestCandidate, bestSeverity))
+                    TriageTier tier = member.IsTrulyDead ? TriageTier.SoulstoneDead : TriageTier.Incapacitated;
+                    if (IsHigherPriority(member, tier, bestCandidate, bestTier, settings.IncludeTempHpInThreshold))
                     {
                         bestCandidate = member;
-                        bestSeverity = BannerSeverity.CriticalDown;
+                        bestTier = tier;
                     }
                 }
                 continue;
@@ -169,7 +187,7 @@ internal sealed class HealerState
                 continue;
             }
 
-            double pct = member.Percent;
+            double pct = member.EffectivePercent(settings.IncludeTempHpInThreshold);
             bool wasLow = _lowHpActive.Contains(member.Id);
             bool isLow = EvaluateLowHpHysteresis(pct, wasLow, settings.HpThresholdPercent, settings.RecoveryHysteresisPercent);
 
@@ -186,10 +204,10 @@ internal sealed class HealerState
                 if (!timedOut)
                 {
                     lowCount++;
-                    if (IsHigherPriority(member, BannerSeverity.LowHp, bestCandidate, bestSeverity))
+                    if (IsHigherPriority(member, TriageTier.LivingLowHp, bestCandidate, bestTier, settings.IncludeTempHpInThreshold))
                     {
                         bestCandidate = member;
-                        bestSeverity = BannerSeverity.LowHp;
+                        bestTier = TriageTier.LivingLowHp;
                     }
                 }
             }
@@ -200,39 +218,65 @@ internal sealed class HealerState
             }
         }
 
-        if (bestCandidate is null || bestSeverity == BannerSeverity.None)
+        if (bestCandidate is null || bestTier == TriageTier.None)
         {
             ClearAlertEpisode();
             string defaultStatus = BuildDefaultStatus(watched, settings, statusLine);
             return BuildIdleOrNoticeView(settings.Mode, now, defaultStatus, targetingStatus, true, peopleSaved);
         }
 
-        if (!_wasAlerting || _lastAlertPlayerId != bestCandidate.Id || _lastAlertSeverity != bestSeverity)
+        BannerSeverity bestSeverity = bestTier == TriageTier.LivingLowHp
+            ? BannerSeverity.LowHp
+            : BannerSeverity.CriticalDown;
+        bool isSoulstone = bestTier == TriageTier.SoulstoneDead;
+
+        if (!_wasAlerting
+            || _lastAlertPlayerId != bestCandidate.Id
+            || _lastAlertSeverity != bestSeverity
+            || _lastAlertSoulstone != isSoulstone)
         {
             _alertGeneration++;
             _wasAlerting = true;
             _lastAlertPlayerId = bestCandidate.Id;
             _lastAlertSeverity = bestSeverity;
+            _lastAlertSoulstone = isSoulstone;
         }
 
-        string primary = bestSeverity == BannerSeverity.CriticalDown
-            ? $"DOWN: {bestCandidate.Name}"
-            : string.Create(CultureInfo.InvariantCulture, $"HEAL {bestCandidate.Name} ({bestCandidate.Percent:0}%)");
+        int thp = Math.Max(0, bestCandidate.TempHitPoints);
+        string thpDetail = !isSoulstone && thp > 0
+            ? string.Create(CultureInfo.InvariantCulture, $" (+{thp} THP)")
+            : "";
 
         string hpDetail = bestCandidate.MaxHitPoints > 0
-            ? string.Create(CultureInfo.InvariantCulture, $"{bestCandidate.HitPoints}/{bestCandidate.MaxHitPoints} HP")
-            : "Incapacitated / Dead";
+            ? string.Create(CultureInfo.InvariantCulture, $"{bestCandidate.HitPoints}/{bestCandidate.MaxHitPoints} HP{thpDetail}")
+            : isSoulstone
+                ? "SOULSTONE"
+                : "Incapacitated / Dead";
 
         string extra = lowCount > 1
             ? string.Create(CultureInfo.InvariantCulture, $" • {lowCount} low")
             : "";
 
-        string secondary = bestSeverity == BannerSeverity.CriticalDown
-            ? $"{hpDetail} — CRITICAL{extra}"
-            : $"{hpDetail}{extra}";
+        string primary = bestTier switch
+        {
+            TriageTier.Incapacitated => $"DOWN: {bestCandidate.Name}",
+            TriageTier.SoulstoneDead => $"DEAD — RAISE {bestCandidate.Name}",
+            _ => string.Create(CultureInfo.InvariantCulture, $"HEAL {bestCandidate.Name} ({bestCandidate.Percent:0}%)")
+        };
+
+        string secondary = bestTier switch
+        {
+            TriageTier.Incapacitated => $"{hpDetail} — CRITICAL • INCAP (HEALABLE){extra}",
+            TriageTier.SoulstoneDead => bestCandidate.MaxHitPoints > 0
+                ? $"{hpDetail} — SOULSTONE • RAISE DEAD{extra}"
+                : $"SOULSTONE • RAISE DEAD{extra}",
+            _ => $"{hpDetail}{extra}"
+        };
 
         string activeStatus = string.IsNullOrWhiteSpace(statusLine)
-            ? string.Create(CultureInfo.InvariantCulture, $"{bestCandidate.Name} {bestCandidate.Percent:0}%")
+            ? (isSoulstone
+                ? $"{bestCandidate.Name} DEAD (Soulstone)"
+                : string.Create(CultureInfo.InvariantCulture, $"{bestCandidate.Name} {bestCandidate.Percent:0}%"))
             : statusLine;
 
         return new AlertBannerView(
@@ -248,7 +292,12 @@ internal sealed class HealerState
             activeStatus,
             targetingStatus ?? "",
             true,
-            peopleSaved);
+            peopleSaved)
+        {
+            IsSoulstone = isSoulstone,
+            AlertTempHitPoints = isSoulstone ? 0 : thp,
+            AlertEffectivePercent = bestCandidate.EffectivePercent(settings.IncludeTempHpInThreshold)
+        };
     }
 
     private static bool EvaluateLowHpHysteresis(double percent, bool currentlyLow, int thresholdPercent, int hysteresisPercent)
@@ -263,7 +312,10 @@ internal sealed class HealerState
         return percent < recoverAt;
     }
 
-    internal static List<WatchedMemberSnapshot> FilterWatched(WatchedMemberSnapshot[] members, Settings settings)
+    internal static List<WatchedMemberSnapshot> FilterWatched(
+        WatchedMemberSnapshot[] members,
+        Settings settings,
+        Func<WatchedMemberSnapshot, bool>? isMuted = null)
     {
         var list = new List<WatchedMemberSnapshot>(members.Length);
         if (settings.Mode == TrackingMode.Party)
@@ -273,6 +325,7 @@ internal sealed class HealerState
             {
                 if (m is null || m.Id == 0) continue;
                 if (!settings.IncludeSelfInPartyMode && m.PartySlotIndex == 0) continue;
+                if (isMuted is not null && isMuted(m)) continue;
                 if (seen.Add(m.Id)) list.Add(m);
             }
             return list;
@@ -286,7 +339,7 @@ internal sealed class HealerState
                 {
                     if (m is not null && m.Id == settings.FocusedPlayerId)
                     {
-                        list.Add(m);
+                        if (isMuted is null || !isMuted(m)) list.Add(m);
                         return list;
                     }
                 }
@@ -298,7 +351,7 @@ internal sealed class HealerState
                 {
                     if (m is not null && string.Equals(m.Name, settings.FocusedPlayerName, StringComparison.OrdinalIgnoreCase))
                     {
-                        list.Add(m);
+                        if (isMuted is null || !isMuted(m)) list.Add(m);
                         return list;
                     }
                 }
@@ -308,16 +361,57 @@ internal sealed class HealerState
         return list;
     }
 
+    // Deterministic triage ordering for DH 5 Raid HUD and manual TargetCritical selection:
+    // 0: Unmuted Incapacitated -> 1: Unmuted Living Low HP -> 2: Unmuted Living Healthy
+    // -> 3: Unmuted Dead Soulstone -> 4: Muted / Disconnected.
+    internal static WatchedMemberSnapshot[] SortForTriage(
+        WatchedMemberSnapshot[] members,
+        Settings settings,
+        Func<WatchedMemberSnapshot, bool>? isMuted = null)
+    {
+        if (members is null || members.Length == 0)
+            return Array.Empty<WatchedMemberSnapshot>();
+
+        bool useTempHp = settings?.IncludeTempHpInThreshold ?? false;
+        int threshold = settings?.HpThresholdPercent ?? 50;
+
+        int Rank(WatchedMemberSnapshot m)
+        {
+            bool muted = isMuted is not null && isMuted(m);
+            if (!m.Connected || muted) return 4;
+            if (m.IsTrulyDead) return 3;
+            if (m.IsIncapacitated) return 0;
+            if (m.MaxHitPoints > 0 && m.EffectivePercent(useTempHp) <= threshold) return 1;
+            return 2;
+        }
+
+        return members
+            .Where(m => m is not null && m.Id != 0)
+            .OrderBy(Rank)
+            .ThenBy(m => m.EffectivePercent(useTempHp))
+            .ThenBy(m => m.PartySlotIndex)
+            .ThenBy(m => m.Id)
+            .ToArray();
+    }
+
     private static bool IsHigherPriority(
         WatchedMemberSnapshot candidate,
-        BannerSeverity candidateSeverity,
+        TriageTier candidateTier,
         WatchedMemberSnapshot? currentBest,
-        BannerSeverity currentSeverity)
+        TriageTier currentTier,
+        bool includeTempHp)
     {
         if (currentBest is null) return true;
-        if (candidateSeverity != currentSeverity) return candidateSeverity > currentSeverity;
+        if (candidateTier != currentTier) return candidateTier > currentTier;
 
-        int pctCmp = candidate.Percent.CompareTo(currentBest.Percent);
+        double candPct = candidateTier == TriageTier.LivingLowHp
+            ? candidate.EffectivePercent(includeTempHp)
+            : candidate.Percent;
+        double currPct = currentTier == TriageTier.LivingLowHp
+            ? currentBest.EffectivePercent(includeTempHp)
+            : currentBest.Percent;
+
+        int pctCmp = candPct.CompareTo(currPct);
         if (pctCmp != 0) return pctCmp < 0;
 
         int slotCmp = candidate.PartySlotIndex.CompareTo(currentBest.PartySlotIndex);
@@ -331,6 +425,7 @@ internal sealed class HealerState
         _wasAlerting = false;
         _lastAlertPlayerId = null;
         _lastAlertSeverity = BannerSeverity.None;
+        _lastAlertSoulstone = false;
     }
 
     private AlertBannerView BuildIdleOrNoticeView(

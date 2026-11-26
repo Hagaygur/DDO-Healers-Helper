@@ -151,7 +151,8 @@ internal sealed class TargetRestoreTracker
         ulong? activeAlertPlayerId,
         bool inTown,
         bool foregroundAllowed,
-        double now)
+        double now,
+        Func<WatchedMemberSnapshot, bool>? isMuted = null)
     {
         if (!_active)
             return null;
@@ -203,7 +204,7 @@ internal sealed class TargetRestoreTracker
         int recoverAt = Math.Min(100, settings.HpThresholdPercent + settings.RecoveryHysteresisPercent);
         bool isAlive = !player.IsDeadOrDown && player.HitPoints > 0;
         bool isHealed = _wasBelowThreshold
-            ? (isAlive && player.MaxHitPoints > 0 && player.Percent >= recoverAt)
+            ? (isAlive && player.MaxHitPoints > 0 && player.EffectivePercent(settings.IncludeTempHpInThreshold) >= recoverAt)
             : (isAlive && (((long)player.HitPoints - _preSwitchHp) >= settings.MinHealDelta
                            || (player.MaxHitPoints > 0 && player.HitPoints >= player.MaxHitPoints)));
 
@@ -220,14 +221,14 @@ internal sealed class TargetRestoreTracker
         if (activeSeverity is BannerSeverity.LowHp or BannerSeverity.CriticalDown || activeAlertPlayerId.HasValue)
             return null;
 
-        var watched = HealerState.FilterWatched(members ?? Array.Empty<WatchedMemberSnapshot>(), settings);
+        var watched = HealerState.FilterWatched(members ?? Array.Empty<WatchedMemberSnapshot>(), settings, isMuted);
         for (int i = 0; i < watched.Count; i++)
         {
             var m = watched[i];
             if (m.Id == 0 || !m.Connected || m.IsTrulyDead)
                 continue;
 
-            if (m.IsDeadOrDown || (m.MaxHitPoints > 0 && m.Percent <= settings.HpThresholdPercent))
+            if (m.IsDeadOrDown || (m.MaxHitPoints > 0 && m.EffectivePercent(settings.IncludeTempHpInThreshold) <= settings.HpThresholdPercent))
                 return null;
         }
 

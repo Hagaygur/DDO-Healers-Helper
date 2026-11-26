@@ -31,19 +31,35 @@ jobs:
           python-version: '3.12'
       - name: Test version policy and SDK verification
         run: python -m unittest discover -s ci -p 'test_*.py' -v
-      - name: Install MSI extraction tools
-        run: sudo apt-get update && sudo apt-get install -y msitools
-      - name: Obtain verified Dungeon Helper SDK
+      - name: Install MSI extraction and Authenticode tools
+        run: sudo apt-get update && sudo apt-get install -y msitools osslsigncode
+      - name: Obtain verified DH 4 and DH 5 SDKs
         run: python ci/get_sdk_linux.py --destination "$RUNNER_TEMP/healers-helper-sdk"
-      - name: Cross-compile Windows solution
+      - name: Cross-compile dual DH 4 and DH 5 solution
         run: |
           for configuration in Debug Release; do
-            dotnet build HealersHelper.sln -c "$configuration" "-p:DungeonHelperDir=$DH_SDK_DIR"
-            python ci/check_build_output.py "src/bin/$configuration/net8.0-windows" "$configuration"
+            dotnet build HealersHelper.sln -c "$configuration" "-p:DungeonHelperDir=$DH_SDK_DIR" "-p:DungeonHelper5Dir=$DH5_SDK_DIR"
+            python ci/check_build_output.py "src/bin/$configuration/net8.0-windows" "$configuration" --target dh4
+            python ci/check_build_output.py "src-dh5/bin/x64/$configuration/net10.0" "$configuration" --target dh5
           done
-          # Repeated Release builds must recreate the ZIP after loose files are removed.
-          dotnet build HealersHelper.sln -c Release "-p:DungeonHelperDir=$DH_SDK_DIR"
-          python ci/check_build_output.py src/bin/Release/net8.0-windows Release
+          # Repeated Release builds must recreate the DH 4 ZIP after loose files are removed.
+          dotnet build HealersHelper.sln -c Release "-p:DungeonHelperDir=$DH_SDK_DIR" "-p:DungeonHelper5Dir=$DH5_SDK_DIR"
+          python ci/check_build_output.py src/bin/Release/net8.0-windows Release --target dh4
+          python ci/check_build_output.py src-dh5/bin/x64/Release/net10.0 Release --target dh5
+      - name: Package and smoke-test DH 5 plugin on Linux
+        env:
+          DH_AUTHOR_KEY_B64: ${{ secrets.DH_AUTHOR_KEY_B64 }}
+        run: |
+          if [ -n "$DH_AUTHOR_KEY_B64" ]; then
+            python ci/sign_dh5.py --dll src-dh5/bin/x64/Release/net10.0/VoK.HealersHelper.dll --version 1.0.0 --output dist/linux-dh5-plugin.zip
+            dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 --no-build -- dist/linux-dh5-plugin.zip "$DH5_SDK_DIR" --require-signed
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            python ci/sign_dh5.py --dll src-dh5/bin/x64/Release/net10.0/VoK.HealersHelper.dll --version 1.0.0 --output dist/linux-dh5-plugin.zip --allow-unsigned
+            dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 --no-build -- dist/linux-dh5-plugin.zip "$DH5_SDK_DIR"
+          else
+            echo "DH_AUTHOR_KEY_B64 secret is missing on non-PR build." >&2
+            exit 1
+          fi
       - name: Run portable behavioral tests
         run: dotnet run --project tests/HealersHelper.Tests.csproj -c Release --no-build -- --contracts dist/contracts-linux.json
 
@@ -59,7 +75,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
-          # 8 supplies the test runtime; global.json selects SDK 10 for builds.
+          # 8 supplies the DH 4 test runtime; global.json selects SDK 10 for builds and DH 5.
           dotnet-version: |
             8.0.x
             10.0.x
@@ -101,39 +117,78 @@ jobs:
             python ci/version.py --base $base
           }
           if ($LASTEXITCODE -ne 0) { throw 'Version selection failed.' }
-      - name: Obtain verified Dungeon Helper SDK
+      - name: Obtain verified DH 4 and DH 5 SDKs
         shell: pwsh
         run: ./ci/Get-Sdk.ps1
       - name: Verify Debug output
         shell: pwsh
         run: |
-          dotnet build HealersHelper.sln -c Debug "-p:DungeonHelperDir=$env:DH_SDK_DIR"
+          dotnet build HealersHelper.sln -c Debug "-p:DungeonHelperDir=$env:DH_SDK_DIR" "-p:DungeonHelper5Dir=$env:DH5_SDK_DIR"
           if ($LASTEXITCODE -ne 0) { throw 'Debug build failed.' }
-          python ci/check_build_output.py src/bin/Debug/net8.0-windows Debug
-          if ($LASTEXITCODE -ne 0) { throw 'Debug output validation failed.' }
-      - name: Build and package
+          python ci/check_build_output.py src/bin/Debug/net8.0-windows Debug --target dh4
+          if ($LASTEXITCODE -ne 0) { throw 'DH 4 Debug output validation failed.' }
+          python ci/check_build_output.py src-dh5/bin/x64/Debug/net10.0 Debug --target dh5
+          if ($LASTEXITCODE -ne 0) { throw 'DH 5 Debug output validation failed.' }
+      - name: Build and package DH 4 and signed DH 5 bundles
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          SHOULD_PUBLISH: ${{ steps.version.outputs.publish }}
+          DH_AUTHOR_KEY_B64: ${{ secrets.DH_AUTHOR_KEY_B64 }}
+        run: |
+          $hasKey = -not [string]::IsNullOrWhiteSpace($env:DH_AUTHOR_KEY_B64)
+          if (-not $hasKey -and ($env:SHOULD_PUBLISH -eq 'true' -or '${{ github.event_name }}' -ne 'pull_request')) {
+            throw 'DH_AUTHOR_KEY_B64 secret is required for non-PR and release builds.'
+          }
+          if ($hasKey) {
+            ./build.ps1 -DungeonHelperDir $env:DH_SDK_DIR -DungeonHelper5Dir $env:DH5_SDK_DIR -Version $env:RELEASE_VERSION
+          } else {
+            ./build.ps1 -DungeonHelperDir $env:DH_SDK_DIR -DungeonHelper5Dir $env:DH5_SDK_DIR -Version $env:RELEASE_VERSION -AllowUnsignedDh5
+          }
+          python ci/check_build_output.py src/bin/Release/net8.0-windows Release --version $env:RELEASE_VERSION --target dh4
+          if ($LASTEXITCODE -ne 0) { throw 'DH 4 Release output validation failed.' }
+          python ci/check_build_output.py src-dh5/bin/x64/Release/net10.0 Release --target dh5
+          if ($LASTEXITCODE -ne 0) { throw 'DH 5 Release output validation failed.' }
+      - name: Windows DH 4 plugin and layout smoke test
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./build.ps1 -DungeonHelperDir $env:DH_SDK_DIR -Version $env:RELEASE_VERSION
-          python ci/check_build_output.py src/bin/Release/net8.0-windows Release --version $env:RELEASE_VERSION
-          if ($LASTEXITCODE -ne 0) { throw 'Release output validation failed.' }
-      - name: Windows plugin and layout smoke test
+          dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- "dist/HealersHelper-$env:RELEASE_VERSION-dh4-plugin.zip" "$env:DH_SDK_DIR"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows DH 4 smoke test failed.' }
+      - name: Windows DH 5 plugin, trust gate, and async smoke test
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          SHOULD_PUBLISH: ${{ steps.version.outputs.publish }}
+          DH_AUTHOR_KEY_B64: ${{ secrets.DH_AUTHOR_KEY_B64 }}
         run: |
-          dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- "src/bin/Release/net8.0-windows/HealersHelper-$env:RELEASE_VERSION-plugin.zip" "$env:DH_SDK_DIR"
-          if ($LASTEXITCODE -ne 0) { throw 'Windows smoke test failed.' }
-      - name: Validate package and create separate source archive
-        run: python ci/package.py
+          $hasKey = -not [string]::IsNullOrWhiteSpace($env:DH_AUTHOR_KEY_B64)
+          if ($hasKey -or $env:SHOULD_PUBLISH -eq 'true') {
+            dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- "dist/HealersHelper-$env:RELEASE_VERSION-dh5-plugin.zip" "$env:DH5_SDK_DIR" --require-signed
+          } else {
+            dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- "dist/HealersHelper-$env:RELEASE_VERSION-dh5-plugin.zip" "$env:DH5_SDK_DIR"
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Windows DH 5 smoke test failed.' }
+      - name: Validate packages and create separate source archive
+        shell: pwsh
+        env:
+          SHOULD_PUBLISH: ${{ steps.version.outputs.publish }}
+          DH_AUTHOR_KEY_B64: ${{ secrets.DH_AUTHOR_KEY_B64 }}
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:DH_AUTHOR_KEY_B64) -or $env:SHOULD_PUBLISH -eq 'true') {
+            python ci/package.py --require-signed
+          } else {
+            python ci/package.py
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Package validation failed.' }
       - uses: actions/upload-artifact@v4
         with:
           name: healers-helper-${{ github.sha }}
           if-no-files-found: error
           path: |
-            dist/*-plugin.zip
+            dist/*-dh4-plugin.zip
+            dist/*-dh5-plugin.zip
             dist/*-source.zip
             dist/contracts.json
             dist/version.json

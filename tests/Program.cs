@@ -29,6 +29,9 @@ internal static class Program
         TestSettingsValidationPersistenceAndFonts();
         TestBannerPresentationAndPositioning();
         TestStatusHudPresentation();
+        TestThreeStateTriageTempHpMuteAndRaidKeymap();
+        TestUiThemePalettesAndStage2Settings();
+        TestOfflineSettingsEngineView();
 
         Console.WriteLine($"{_count} checks passed.");
         if (_count < 35) throw new Exception($"Expected >= 35 assertions, ran {_count}");
@@ -1085,5 +1088,196 @@ internal static class Program
         var editingHidden = StatusHudPresentation.Compute(normalView, hiddenSettings, true, 9.1);
         Assert(editingHidden.Visible && editingHidden.ShowDragBox && editingHidden.DragHint == "Drag status • locks in 10s",
             "StatusHud drag mode forces visibility with drag box and hint");
+    }
+
+    private static void TestThreeStateTriageTempHpMuteAndRaidKeymap()
+    {
+        var state = new HealerState();
+        var settings = new Settings { HpThresholdPercent = 50, DeadAlertSeconds = 6 };
+
+        var self = new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false);
+        var soulstone = new WatchedMemberSnapshot(2, "Wizard", -15, 200, 1, true, true, IsTrulyDead: true);
+        var lowWithThp = new WatchedMemberSnapshot(3, "Barb", 80, 200, 2, true, false, TempHitPoints: 1000);
+        var incap = new WatchedMemberSnapshot(4, "Tank", -4, 200, 3, true, true, IsTrulyDead: false);
+
+        // 1. Incapacitated (healable) outranks BOTH Living Low HP and Dead Soulstone.
+        var v1 = state.Evaluate(new[] { self, soulstone, lowWithThp, incap }, settings, 10.0);
+        Assert(v1.Severity == BannerSeverity.CriticalDown && !v1.IsSoulstone && v1.AlertPlayerId == 4
+               && v1.PrimaryText == "DOWN: Tank" && v1.SecondaryText.Contains("INCAP (HEALABLE)"),
+            "3-state triage: Incapacitated outranks Living Low HP and Dead Soulstone");
+
+        // 2. Living Low HP outranks Dead Soulstone so soulstones never steal priority from injured living allies.
+        var v2 = state.Evaluate(new[] { self, soulstone, lowWithThp }, settings, 11.0);
+        Assert(v2.Severity == BannerSeverity.LowHp && !v2.IsSoulstone && v2.AlertPlayerId == 3
+               && v2.AlertTempHitPoints == 1000 && v2.SecondaryText.Contains("(+1000 THP)"),
+            "3-state triage: Living Low HP outranks Dead Soulstone and displays +1000 THP badge");
+
+        // 3. Dead Soulstone alone surfaces calm Spectral Violet + Bone-Silver non-flashing banner.
+        var v3 = state.Evaluate(new[] { self, soulstone }, settings, 12.0);
+        Assert(v3.Severity == BannerSeverity.CriticalDown && v3.IsSoulstone && v3.AlertPlayerId == 2
+               && v3.PrimaryText == "DEAD — RAISE Wizard" && v3.SecondaryText.Contains("SOULSTONE • RAISE DEAD"),
+            "3-state triage: Dead Soulstone formats RAISE DEAD alert with IsSoulstone=true");
+
+        var soulFrame = BannerPresentation.Compute(v3, settings, demo: false, editing: false, 0.0, 0.0);
+        var soulFrameLater = BannerPresentation.Compute(v3, settings, demo: false, editing: false, 0.25, 0.0);
+        Assert(soulFrame.Visible && soulFrame.IsSoulstone && !soulFrame.FlashOn && !soulFrameLater.FlashOn
+               && soulFrame.BackgroundColorArgb == BannerPresentation.SoulstoneBgArgb
+               && soulFrame.BorderColorArgb == BannerPresentation.SoulstoneBorderArgb,
+            "Dead Soulstone renders calm non-flashing Spectral Violet + Bone-Silver banner");
+
+        // 3b. Bleed-out from timed-out Incapacitated (0..-9 HP) to Dead Soulstone (<=-10 HP) triggers fresh DEAD — RAISE alert,
+        //     then times out and stays latched even if corpse leaves entity bubble (IsTrulyDead=false) until revived (HP > 0).
+        var bleedState = new HealerState();
+        var bleedIncap = new[] { self, new WatchedMemberSnapshot(7, "Fighter", -5, 200, 1, true, true, IsTrulyDead: false) };
+        var bleedDead = new[] { self, new WatchedMemberSnapshot(7, "Fighter", -15, 200, 1, true, true, IsTrulyDead: true) };
+        var bleedCorpseOutBubble = new[] { self, new WatchedMemberSnapshot(7, "Fighter", -15, 200, 1, true, true, IsTrulyDead: false) };
+        var bleedRevived = new[] { self, new WatchedMemberSnapshot(7, "Fighter", 120, 200, 1, true, false, IsTrulyDead: false) };
+        Assert(bleedState.Evaluate(bleedIncap, settings, 50.0).PrimaryText == "DOWN: Fighter",
+            "bleed-out starts with Incapacitated DOWN alert");
+        Assert(bleedState.Evaluate(bleedIncap, settings, 57.0).Severity == BannerSeverity.None,
+            "bleed-out suppresses Incapacitated alert after DeadAlertSeconds");
+        var bleedSoulView = bleedState.Evaluate(bleedDead, settings, 58.0);
+        Assert(bleedSoulView.Severity == BannerSeverity.CriticalDown && bleedSoulView.IsSoulstone && bleedSoulView.PrimaryText == "DEAD — RAISE Fighter",
+            "bleed-out transition from timed-out Incapacitated to Dead Soulstone triggers fresh DEAD — RAISE alert");
+        Assert(bleedState.Evaluate(bleedDead, settings, 65.0).Severity == BannerSeverity.None,
+            "bleed-out Dead Soulstone suppresses after DeadAlertSeconds");
+        Assert(bleedState.Evaluate(bleedCorpseOutBubble, settings, 66.0).Severity == BannerSeverity.None
+               && bleedState.Evaluate(bleedDead, settings, 67.0).Severity == BannerSeverity.None,
+            "latched Dead Soulstone leaving/re-entering entity bubble does not re-trigger RAISE alert");
+        Assert(bleedState.Evaluate(bleedRevived, settings, 68.0).Severity == BannerSeverity.None
+               && bleedState.Evaluate(bleedDead, settings, 69.0).IsSoulstone,
+            "revival clears latched WasSoulstone so subsequent death alerts again");
+
+        // 4. Temp HP effective-HP threshold toggle.
+        var tempHpSettings = new Settings { HpThresholdPercent = 50, IncludeTempHpInThreshold = true };
+        var shieldedView = new HealerState().Evaluate(new[] { self, lowWithThp }, tempHpSettings, 20.0);
+        Assert(shieldedView.Severity == BannerSeverity.None,
+            "IncludeTempHpInThreshold=true treats 80 HP + 1000 THP (>50% effective HP) as safe");
+
+        var lowFrame = BannerPresentation.Compute(v2, settings, demo: false, editing: false, 0.0, 0.0);
+        Assert(lowFrame.HpBarPercent.HasValue && Math.Abs(lowFrame.HpBarPercent.Value - 40.0) < 0.01 && lowFrame.TempHitPoints == 1000,
+            "BannerFrame exposes HpBarPercent and TempHitPoints for spatial HP bar strip");
+        var noBarFrame = BannerPresentation.Compute(v2, new Settings { ShowBannerHpBar = false }, demo: false, editing: false, 0.0, 0.0);
+        Assert(!noBarFrame.HpBarPercent.HasValue, "ShowBannerHpBar=false disables spatial HP bar strip");
+
+        // 5. Per-session mute excludes muted player (e.g. Pale Master undead shroud) from alerts and lowers triage rank.
+        var paleMaster = new WatchedMemberSnapshot(5, "LichKing", 30, 200, 4, true, false);
+        var mutedState = new HealerState();
+        Assert(mutedState.Evaluate(new[] { self, paleMaster }, settings, 30.0, isMuted: m => m.Name == "LichKing").Severity == BannerSeverity.None,
+            "per-session mute suppresses alerts for muted Pale Master / tank");
+
+        var sorted = HealerState.SortForTriage(
+            new[] { self, soulstone, lowWithThp, incap, paleMaster },
+            settings,
+            m => m.Id == 5);
+        Assert(sorted.Length == 5
+               && sorted[0].Id == 4 // Incap
+               && sorted[1].Id == 3 // Living Low
+               && sorted[2].Id == 1 // Living Healthy
+               && sorted[3].Id == 2 // Dead Soulstone
+               && sorted[4].Id == 5, // Muted
+            "SortForTriage orders Incap -> Low -> Healthy -> Soulstone -> Muted");
+
+        // 6. Raid Keymap Readiness (Slots 7-12).
+        var noneBound = TargetPolicy.EvaluateRaidKeymapReadiness(_ => false);
+        var halfBound = TargetPolicy.EvaluateRaidKeymapReadiness(a => a is "TARGET_FELLOW_7_KEY" or "TARGET_FELLOW_8_KEY" or "TARGET_FELLOW_9_KEY");
+        var allBound = TargetPolicy.EvaluateRaidKeymapReadiness(_ => true);
+        var offlineKeymap = TargetPolicy.EvaluateRaidKeymapReadiness(null);
+        Assert(noneBound.BoundCount == 0 && noneBound.TotalCount == 6 && halfBound.BoundCount == 3
+               && allBound.BoundCount == 6 && allBound.Summary.Contains("6/6 bound")
+               && offlineKeymap.Summary.Contains("offline"),
+            "EvaluateRaidKeymapReadiness accurately counts bound raid slots 7-12");
+    }
+
+    private static void TestUiThemePalettesAndStage2Settings()
+    {
+        Assert(UiThemePalette.All.Length == 3, "exactly 3 DDO x M3 themes defined");
+        Assert(UiThemePalette.EberronGold.SurfaceBaseArgb == unchecked((int)0xFF111318)
+               && UiThemePalette.EberronGold.PrimaryArgb == unchecked((int)0xFFE2B75B)
+               && UiThemePalette.CannithArcane.SurfaceBaseArgb == unchecked((int)0xFF0E141D)
+               && UiThemePalette.CannithArcane.PrimaryArgb == unchecked((int)0xFF56CCF2)
+               && UiThemePalette.FeywildTwilight.SurfaceBaseArgb == unchecked((int)0xFF15111E)
+               && UiThemePalette.FeywildTwilight.PrimaryArgb == unchecked((int)0xFFCDA4FF),
+            "all 3 DDO x M3 theme palettes match exact hex specification");
+
+        Assert(UiThemePalette.TryParse("eberron", out var t0) && t0 == UiTheme.EberronGold
+               && UiThemePalette.TryParse("cannith", out var t1) && t1 == UiTheme.CannithArcane
+               && UiThemePalette.TryParse("feywild", out var t2) && t2 == UiTheme.FeywildTwilight
+               && !UiThemePalette.TryParse("invalid", out _),
+            "UiThemePalette.TryParse parses eberron/cannith/feywild and rejects unknown strings");
+
+        var invalid = new Settings
+        {
+            Theme = (UiTheme)99,
+            RaidHudX = double.NaN,
+            RaidHudY = 5.0,
+            QuickHealHotbar = 99,
+            QuickHealSlot = 0,
+            QuickRaiseHotbar = -3,
+            QuickRaiseSlot = 25
+        };
+        invalid.Validate();
+        Assert(invalid.Theme == UiTheme.EberronGold && invalid.RaidHudX == 0.02 && invalid.RaidHudY == 1.0
+               && invalid.QuickHealHotbar == 20 && invalid.QuickHealSlot == 1
+               && invalid.QuickRaiseHotbar == 0 && invalid.QuickRaiseSlot == 10,
+            "Settings.Validate clamps Theme, RaidHud coords, and Quick-Heal/Quick-Raise hotbar slots");
+
+        string dir = Path.Combine(Path.GetTempPath(), "healers-helper-stage2-tests-" + Guid.NewGuid());
+        try
+        {
+            var store = new SettingsStore(dir);
+            var s = store.Load();
+            Assert(s.Theme == UiTheme.EberronGold && !s.IncludeTempHpInThreshold && s.ShowBannerHpBar
+                   && !s.RaidHudEnabled && s.QuickHealHotbar == 0 && s.QuickRaiseHotbar == 0,
+                "Stage 2 settings ship with safe backwards-compatible defaults");
+
+            s.Theme = UiTheme.FeywildTwilight;
+            s.IncludeTempHpInThreshold = true;
+            s.ShowBannerHpBar = false;
+            s.RaidHudEnabled = true;
+            s.RaidHudX = 0.08;
+            s.RaidHudY = 0.33;
+            s.QuickHealHotbar = 3;
+            s.QuickHealSlot = 5;
+            s.QuickRaiseHotbar = 4;
+            s.QuickRaiseSlot = 9;
+            s.QuickCastCriticalHotkey = new HotkeyBinding(0x51, true, true, false);
+            store.Save(s);
+
+            var reloaded = store.Load();
+            Assert(reloaded.Theme == UiTheme.FeywildTwilight && reloaded.IncludeTempHpInThreshold && !reloaded.ShowBannerHpBar
+                   && reloaded.RaidHudEnabled && Math.Abs(reloaded.RaidHudX - 0.08) < 0.001 && Math.Abs(reloaded.RaidHudY - 0.33) < 0.001
+                   && reloaded.QuickHealHotbar == 3 && reloaded.QuickHealSlot == 5
+                   && reloaded.QuickRaiseHotbar == 4 && reloaded.QuickRaiseSlot == 9
+                   && reloaded.QuickCastCriticalHotkey == new HotkeyBinding(0x51, true, true, false),
+                "JSON round-trip preserves Theme, TempHP/HP-bar toggles, Raid HUD, and Quick-Cast settings");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static void TestOfflineSettingsEngineView()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "healers-helper-offline-view-" + Guid.NewGuid());
+        try
+        {
+            string? copied = null;
+            var view = new OfflineSettingsEngineView(dir, text => { copied = text; return true; });
+            Assert(view.GetSettings().PluginEnabled && view.GetSettings().HudEnabled, "OfflineSettingsEngineView defaults ON");
+            view.TogglePluginEnabled();
+            view.ToggleBannerHud();
+            view.CycleMode();
+            Assert(!view.GetSettings().PluginEnabled && !view.GetSettings().HudEnabled && view.GetSettings().Mode == TrackingMode.SinglePlayer,
+                "OfflineSettingsEngineView persists toggles and mode cycle");
+            Assert(view.CopyChatScorecard() && !string.IsNullOrEmpty(copied),
+                "OfflineSettingsEngineView delegates clipboard copy");
+            Assert(view.GetRaidKeymapSummary().Contains("offline"), "OfflineSettingsEngineView reports offline raid keymap readiness");
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
     }
 }

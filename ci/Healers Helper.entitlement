@@ -1,0 +1,11 @@
+{
+  "serial": "DH-COMMUNITY-HEALERS HELPER-20261126",
+  "pluginId": "54b48548-05ff-48cf-bce1-c6270e3d4a3f",
+  "pluginName": "Healers Helper",
+  "authorId": "auth_d4354f01",
+  "authorName": "Warned",
+  "authorKeyFingerprint": "38C3897AD429A949FE9CFE9B7064C3EC8DF4B6A0E93B261C79FEF27B2DA333AB",
+  "tier": "community",
+  "notBefore": "2026-11-26T00:00:00Z",
+  "notAfter": "2027-11-26T00:00:00Z"
+}

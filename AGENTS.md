@@ -2,9 +2,14 @@
 
 This file applies to the entire repository. Read the task-specific documents below before changing the associated code. Explicit user instructions take precedence over these project guidelines. Human documentation starts at [docs/README.md](docs/README.md).
 
-## Objective and current baseline
+## Objective and dual-target baseline
 
-Build a Dungeon Helper (DH) healer alert plugin (`VoK.HealersHelper`, display name **DDO Healer's Helper**, repo slug `DDO-Healers-Helper`) for Dungeons & Dragons Online (DDO) that watches party, raid, solo, or single-player HP, flashes a high-contrast center-screen banner when a watched player drops below threshold or goes down, and optionally targets that player automatically or via hotkeys. The HUD must remain click-through and compatible with Lossless Scaling (LS). The stable release baseline is 1.0.0; GitHub Actions chooses later versions. Build with the .NET 10 SDK; the runtime target remains .NET 8 Windows and the pinned **VoK.Sdk 4.2.1.0**, not the newest NuGet package.
+Build and maintain **DDO Healer's Helper** (`VoK.HealersHelper`, repo slug `DDO-Healers-Helper`) for Dungeons & Dragons Online (DDO) across both Dungeon Helper hosts:
+- **DH 4 (`src/`, `net8.0-windows`, `AnyCPU`)**: Out-of-process WinForms + click-through 32bpp DIB HUD (`Lossless Scaling` compatible) targeting pinned **VoK.Sdk 4.2.1.0**, plugin ID `9b6c8e42-3d19-4f7a-9c54-7e21d804a6b3`, plugin key `ddo-healers-helper`.
+- **DH 5 Beta (`src-dh5/`, `net10.0`, `x64`)**: In-process DX10/11 `ImGuiNET` plugin targeting pinned **VoK.Sdk 5.3.0.0**, `[PluginId("54b48548-05ff-48cf-bce1-c6270e3d4a3f")]`, `[PluginName("Healers Helper")]`, `[AssemblyCompany("Warned")]`, `[PluginIcon("Icon.png")]` (36x36 embedded PNG).
+- **Shared Core (`src/*.cs` linked into `src-dh5/` and `tests/HealersHelper.Tests.csproj`)**: `Contracts.cs`, `UiThemePalette.cs`, `Settings.cs`, `OfflineSettingsEngineView.cs`, `HotkeyMatcher.cs`, `HealerStats.cs`, `PeopleSavedTracker.cs`, `TargetRestoreTracker.cs`, `HealerState.cs`, `BannerPresentation.cs`, and `StatusHudPresentation.cs` must stay 100% portable C# with zero WinForms/Win32 P/Invoke.
+
+Build with the .NET 10 SDK (`global.json`); do not merge `src/` and `src-dh5/` into one ZIP (archive layouts, TFMs, SDK contracts, and trust gates are mutually incompatible).
 
 ## Read by task
 
@@ -18,28 +23,34 @@ Build a Dungeon Helper (DH) healer alert plugin (`VoK.HealersHelper`, display na
 
 ## Essential constraints
 
-- Installer ZIP: exactly three runtime files under `plugins/HealersHelper/`, DLL first (`VoK.HealersHelper.dll`, `VoK.HealersHelper.deps.json`, `VoK.HealersHelper.metadata`). Never add documentation, source, tests, PDBs, or SDK DLLs to that ZIP. Put source and docs in the separate source archive.
-- Keep SDK callbacks short. `HealerState`, `PeopleSavedTracker`, `TargetRestoreTracker`, `HealerStats` (`StreakTracker`, `ReflexTracker`, `RankForSaves`, `FormatChatScorecard`), `HotkeyMatcher`, `BannerPresentation`, `StatusHudPresentation`, and `Settings` are pure portable C#; SDK data collection and targeting belong in `HealerEngine` / `TargetSelector`. Native windows (`BannerHudWindow`, `StatusHudWindow`) share the HUD STA thread (`BannerHudController`).
-- Keep `GetPartyMembers()` + self (`GetCurrentCharacterId()` / `GetCurrentCharacter()`) merged: DH `GetPartyMembers()` excludes the local player and caches its property getters, so poll fresh each tick and enrich with `GetEntity(id)` for `LifeState` and live HP.
-- Guard `GetSelectedObjectId()` properly: DH 4.2.1.0 returns `(ulong?)0` rather than `null` when nothing is selected. Require `targetId > 0 && targetId < ulong.MaxValue`, non-deleted entity, and `GetSelectedObjectId().GetValueOrDefault() != targetId` before calling `SelectObject(targetId)`.
-- Support hotkeys through both `EventProvider.KeyDown` (when DH `HotKeysEnabled` is true) and foreground-gated `GetAsyncKeyState` polling, deduplicated in `HotkeyMatcher` so neither missed events nor double-fires occur.
-- Keep the HUD separate from DH's hosted configuration panel. Retain `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WDA_EXCLUDEFROMCAPTURE` (`0x11`), `IsWineRuntime` graceful fallbacks, and `HWND_TOPMOST` reassertion.
-- Font sizes are exact integer pixel values (`FontSizePixels`: `18..140`; `StatusFontSizePixels`: `9..48`); `BannerOpacity` clamps to `20..255`. Retain the stable plugin ID (`9b6c8e42-3d19-4f7a-9c54-7e21d804a6b3`) and plugin key (`ddo-healers-helper`). Keep `TogglePluginHotkey` (`Ctrl+Shift+K`) active even when `PluginEnabled` is `false`, preserve offline/last-state `PluginEnabled`/`HudEnabled` persistence, and guard `PeopleSaved` plus untouched `PluginEnabled`/`HudEnabled`/`Mode` states against stale dialog saves.
-- A failing test blocks release; it does not justify bumping a version or weakening an assertion. Version contracts are observations of passing behavior, not a universal feature detector.
-- State compatibility accurately: tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all configurations), and cross-compiled + CI-tested natively on Linux with Wine/Proton guards (`IsWineRuntime`) so it should work via Wine/Proton while noting live Linux gameplay is untested. Never claim universal hardware/capture guarantees or claim live Linux gameplay has been tested unless actually executed.
+- **Dual plugin ZIPs & strict secret hygiene**:
+  - DH 4 ZIP (`HealersHelper-<ver>-dh4-plugin.zip`): exactly 3 runtime files under `plugins/HealersHelper/`, DLL first (`VoK.HealersHelper.dll`, `VoK.HealersHelper.deps.json`, `VoK.HealersHelper.metadata`).
+  - DH 5 ZIP (`HealersHelper-<ver>-dh5-plugin.zip`): exact 8 signed files at archive root (`Healers Helper.entitlement`, `Healers Helper.entitlement.sig`, `Healers Helper.manifest`, `Healers Helper.manifest.sig`, `Healers Helper.pem`, `VoK.HealersHelper.deps.json`, `VoK.HealersHelper.dll`, `plugin.metadata`).
+  - **NEVER** commit, print, or package `*.key`, `*.pfx`, `signing.*`, `.sdk-cache/`, PDBs, docs, or `VoK.Sdk.dll` inside plugin or source ZIPs. `ci/sign_dh5.py` must clean temporary signing directories in `finally:`.
+- **Keep SDK callbacks short and deadlock-free**:
+  - DH 4: keep callbacks short; poll `GetPartyMembers()` + self (`GetCurrentCharacterId()` / `GetCurrentCharacter()`) and enrich with `GetEntity(id)` for `LifeState` and `HitPoints_Temp`.
+  - DH 5: **NEVER** call `.Result` / `.GetAwaiter().GetResult()` on frame-marshaled SDK calls inside `ClientFrameStep()`, `ImGui_Render()`, or `lock`. Hydrate live `LifeState` via `await entity.UpdateProperties([0x10000E0Cu])` in `Dh5HealerEngine.TickAsync()`, track connection state via `eventProvider.Party`, and override `IPlugin.WindowVisible` (`false` by default). Zero `System.Windows.Forms` or `System.Media` references in `src-dh5/`.
+- **3-State Life/Death Triage & Targetless Quick-Cast**:
+  - Incapacitated (`0..-9 HP`, healable) outranks Living Low HP, which outranks Dead Soulstone (`<= -10 HP`, calm Spectral Violet `DEAD — RAISE`, never steals auto-target from living allies).
+  - Guard `GetSelectedObjectId()` properly (`(ulong?)0` when unselected; require `targetId > 0 && targetId < ulong.MaxValue`, `!IsDeleted`, `GetSelectedObjectId().GetValueOrDefault() != targetId`).
+  - In DH 5, `InvokeHotbar(bar, slot, targetId)` defaults to disabled (`QuickHealHotbar = 0`, `QuickRaiseHotbar = 0`) until configured.
+- **Hotkeys, HUD, Themes & Compatibility**:
+  - Deduplicate hotkeys in `HotkeyMatcher`; keep `TogglePluginHotkey` (`Ctrl+Shift+K`) active when `PluginEnabled` is `false`; preserve offline persistence (`OfflineSettingsEngineView`) and dirty-tracked saves.
+  - DH 4 HUDs keep `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WDA_EXCLUDEFROMCAPTURE` (`0x11`), `IsWineRuntime` guards, and `HWND_TOPMOST`. Font sizes are exact integer pixels (`FontSizePixels`: `18..140`, `StatusFontSizePixels`: `9..48`); `BannerOpacity` clamps `20..255`.
+  - Share `UiTheme` (`EberronGold = 0`, `CannithArcane = 1`, `FeywildTwilight = 2`) from `src/UiThemePalette.cs` across DH 4 and DH 5 while keeping `v1.3.0` custom banner colors/opacity/disable and `13/8/6`-arg presentation constructors intact (preserving `minor` SemVer).
+  - State compatibility accurately: DH 4 is tested live on DDO + DH + Lossless Scaling on Windows 11 (not guaranteed on all configs), cross-compiled on Linux with `IsWineRuntime` guards (live Linux gameplay untested); DH 5 Beta trust gate and ALC loading are verified locally via `TrustProbe` and `Dh5Smoke` against `VoK.Sdk 5.3.0.0` (live DH 5 DX10/11 gameplay untested here).
 
 ## Commands from repository root
 
 ```powershell
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
-.\build.ps1 -DungeonHelperDir "$env:APPDATA\Dungeon Helper" -Version 1.0.0
-dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- src/bin/Release/net8.0-windows/HealersHelper-1.0.0-plugin.zip "$env:APPDATA\Dungeon Helper"
+.\ci\Get-Sdk.ps1
+.\build.ps1 -Version 1.4.0 -Dh5KeyFile C:\path\to\author.key
+dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.4.0-dh4-plugin.zip "$env:DH_SDK_DIR"
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.4.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
 ```
-
-Run checks relevant to the change. The solution cross-compiles on Linux with the compatible SDK; only Windows smoke and live DH execution require Windows. Every plugin build creates the installer: Release leaves only the ZIP in `src/bin/Release/net8.0-windows/`, while Debug retains DLL, deps.json, metadata, and PDB alongside the ZIP. `build.ps1` only modifies `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` when the requested version differs from the current stamp (preserving LF and UTF-8 without BOM).
 
 ## Documentation and completion
 
-- **Mandatory per-version `README.md` & docs sync:** At the end of every version/release, you MUST update `README.md` (features, all `Settings` properties and hotkeys, gamification/options explainer, verified test counts, and `## Release history`) in the same commit, and synchronize `docs/{agents,human}/*`. `ci/test_version.py` (`test_readme_documents_all_settings_hotkeys_and_gamification`) enforces that 100% of public `Settings` properties, all 8 prestige ranks, `### Gamification options explainer`, and `## Release history` remain documented in `README.md`.
-- `ci/package.py` must include `docs/` and `AGENTS.md` in source packages while keeping plugin packages runtime-only. State what changed, what ran, what remains untested, and the expected version impact in handoffs. Do not introduce environment-specific local paths, user logs, or downloaded SDK binaries into the repository.
+- **Mandatory per-version `README.md` & docs sync:** At the end of every version/release, update `README.md` (features, all `Settings` properties, all 8 prestige ranks, `### Gamification options explainer`, verified test counts, and `## Release history`) and synchronize `docs/{agents,human}/*` in the same commit. `ci/test_version.py` enforces 100% `Settings.cs` coverage and secret hygiene automatically.

@@ -15,10 +15,18 @@ internal sealed class SettingsDialog : Form
     private readonly Font _dialogFont = new("Segoe UI", 9);
     private readonly List<HotkeyEntry> _hotkeyEntries = new(7);
 
+    private static readonly Color SlateBg = Color.FromArgb(17, 19, 24);
+    private static readonly Color SurfaceBg = Color.FromArgb(26, 29, 36);
+    private static readonly Color ButtonBg = Color.FromArgb(34, 38, 48);
+    private static readonly Color BorderHairline = Color.FromArgb(62, 68, 86);
+    private static readonly Color TextPrimary = Color.FromArgb(236, 238, 242);
+    private static readonly Color GoldAccent = Color.FromArgb(226, 183, 91);
+
     // Group 1: HP Alert & Tracking
     private readonly CheckBox _pluginEnabled = new() { Name = "PluginEnabledCheckBox", Text = "Plugin enabled (master)", AutoSize = true };
     private readonly ComboBox _mode = new() { Name = "ModeCombo", DropDownStyle = ComboBoxStyle.DropDownList, Width = 125 };
     private readonly CheckBox _includeSelf = new() { Name = "IncludeSelfCheckBox", Text = "Include self in Party mode", AutoSize = true };
+    private readonly CheckBox _includeTempHp = new() { Name = "IncludeTempHpCheckBox", Text = "Count Temp HP in threshold", AutoSize = true };
     private readonly NumericUpDown _threshold = new() { Name = "HpThresholdNumeric", Minimum = 5, Maximum = 95, Width = 60 };
     private readonly NumericUpDown _hysteresis = new() { Name = "RecoveryHysteresisNumeric", Minimum = 0, Maximum = 20, Width = 60 };
     private readonly NumericUpDown _deadSeconds = new() { Name = "DeadAlertSecondsNumeric", Minimum = 0, Maximum = 60, Width = 60 };
@@ -42,10 +50,12 @@ internal sealed class SettingsDialog : Form
     private readonly TextBox _fontSize = new() { Name = "FontSizeTextBox", Width = 55, MaxLength = 3 };
     private readonly NumericUpDown _bannerOpacity = new() { Name = "BannerOpacityNumeric", Minimum = 20, Maximum = 255, Increment = 5, Width = 65 };
     private readonly CheckBox _flashBanner = new() { Name = "FlashBannerCheckBox", Text = "Flash banner", AutoSize = true };
+    private readonly CheckBox _showBannerHpBar = new() { Name = "ShowBannerHpBarCheckBox", Text = "Spatial HP bar", AutoSize = true };
     private readonly NumericUpDown _flashInterval = new() { Name = "FlashIntervalNumeric", Minimum = 100, Maximum = 1000, Increment = 25, Width = 70 };
     private readonly CheckBox _soundOnAlert = new() { Name = "SoundOnAlertCheckBox", Text = "Sound on alert", AutoSize = true };
     private readonly CheckBox _statusHudEnabled = new() { Name = "StatusHudEnabledCheckBox", Text = "Status HUD enabled", AutoSize = true };
     private readonly TextBox _statusFontSize = new() { Name = "StatusFontSizeTextBox", Width = 50, MaxLength = 3 };
+    private readonly ComboBox _themeCombo = new() { Name = "UiThemeCombo", DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
     private readonly CheckBox _excludeCapture = new() { Name = "ExcludeFromCaptureCheckBox", Text = "Exclude from capture (Lossless Scaling)", AutoSize = true };
     private readonly Button _lowHpBgColorBtn = MakeAutoButton("LowHpBgColorButton", "Low BG: #B84200");
     private readonly Button _lowHpBorderColorBtn = MakeAutoButton("LowHpBorderColorButton", "Low Border: #FFE066");
@@ -61,7 +71,7 @@ internal sealed class SettingsDialog : Form
         AutoSize = true,
         MaximumSize = new Size(530, 0),
         Margin = new Padding(4, 4, 4, 2),
-        ForeColor = Color.FromArgb(75, 90, 115)
+        ForeColor = Color.FromArgb(159, 170, 192)
     };
 
     // Group 4: Auto-Targeting
@@ -70,6 +80,14 @@ internal sealed class SettingsDialog : Form
     private readonly NumericUpDown _targetCooldown = new() { Name = "AutoTargetCooldownNumeric", Minimum = 0.5m, Maximum = 30.0m, DecimalPlaces = 1, Increment = 0.5m, Width = 65 };
     private readonly CheckBox _restorePreviousTarget = new() { Name = "RestorePreviousTargetCheckBox", Text = "Restore previous target once healed", AutoSize = true };
     private readonly NumericUpDown _restoreDelay = new() { Name = "RestoreTargetDelayNumeric", Minimum = 0.0m, Maximum = 5.0m, DecimalPlaces = 1, Increment = 0.1m, Width = 60 };
+    private readonly Label _raidKeymapLabel = new()
+    {
+        Name = "RaidKeymapReadinessLabel",
+        AutoSize = true,
+        MaximumSize = new Size(530, 0),
+        Margin = new Padding(4, 4, 4, 2),
+        ForeColor = GoldAccent
+    };
 
     // Group 5: Global Hotkeys
     private readonly TextBox _togglePluginHotkeyBox = new() { Name = "TogglePluginHotkeyBox", ReadOnly = true, Width = 140 };
@@ -80,7 +98,7 @@ internal sealed class SettingsDialog : Form
     private readonly TextBox _copyScorecardHotkeyBox = new() { Name = "CopyScorecardHotkeyBox", ReadOnly = true, Width = 140 };
     private readonly TextBox _toggleBannerHotkeyBox = new() { Name = "ToggleBannerHotkeyBox", ReadOnly = true, Width = 140 };
 
-    private readonly Label _status = new() { Name = "StatusLabel", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(2, 6, 2, 6), ForeColor = Color.FromArgb(40, 75, 130) };
+    private readonly Label _status = new() { Name = "StatusLabel", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(2, 6, 2, 6), ForeColor = GoldAccent };
 
     private bool _pluginEnabledDirty;
     private bool _hudEnabledDirty;
@@ -123,9 +141,11 @@ internal sealed class SettingsDialog : Form
 
         Text = "DDO Healer's Helper — Settings";
         Font = _dialogFont;
+        BackColor = SlateBg;
+        ForeColor = TextPrimary;
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Size = new Size(760, 720);
+        Size = new Size(760, 740);
         MinimumSize = new Size(640, 560);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
@@ -136,7 +156,9 @@ internal sealed class SettingsDialog : Form
             AutoScroll = true,
             ColumnCount = 1,
             RowCount = 7,
-            Padding = new Padding(12)
+            Padding = new Padding(12),
+            BackColor = SlateBg,
+            ForeColor = TextPrimary
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 7; i++)
@@ -150,6 +172,7 @@ internal sealed class SettingsDialog : Form
 
         _pluginEnabled.Checked = _settings.PluginEnabled;
         _includeSelf.Checked = _settings.IncludeSelfInPartyMode;
+        _includeTempHp.Checked = _settings.IncludeTempHpInThreshold;
         _suppressInTown.Checked = _settings.SuppressAlertsInTown;
         foreach (var m in Enum.GetValues<TrackingMode>())
         {
@@ -177,7 +200,8 @@ internal sealed class SettingsDialog : Form
         trackingRow2.Controls.AddRange(new Control[]
         {
             MakeFieldLabel("Max alert (s, 0=inf)"), _maxAlertSeconds,
-            _suppressInTown
+            _suppressInTown,
+            _includeTempHp
         });
 
         trackingTable.Controls.Add(trackingRow0, 0, 0);
@@ -220,9 +244,15 @@ internal sealed class SettingsDialog : Form
         _fontSize.Text = _settings.FontSizePixels.ToString(CultureInfo.InvariantCulture);
         _bannerOpacity.Value = Math.Clamp(_settings.BannerOpacity, 20, 255);
         _flashBanner.Checked = _settings.FlashBanner;
+        _showBannerHpBar.Checked = _settings.ShowBannerHpBar;
         _flashInterval.Value = Math.Clamp(_settings.FlashIntervalMs, 100, 1000);
         _statusHudEnabled.Checked = _settings.StatusHudEnabled;
         _statusFontSize.Text = _settings.StatusFontSizePixels.ToString(CultureInfo.InvariantCulture);
+        foreach (var pal in UiThemePalette.All)
+        {
+            _themeCombo.Items.Add(pal.DisplayName);
+        }
+        _themeCombo.SelectedIndex = Math.Clamp((int)_settings.Theme, 0, UiThemePalette.All.Length - 1);
         _soundOnAlert.Checked = _settings.SoundOnAlert;
         _excludeCapture.Checked = _settings.ExcludeFromCapture;
 
@@ -244,6 +274,7 @@ internal sealed class SettingsDialog : Form
             MakeFieldLabel("Banner font (18-140 px)"), _fontSize,
             MakeFieldLabel("Opacity (20-255)"), _bannerOpacity,
             _flashBanner,
+            _showBannerHpBar,
             MakeFieldLabel("Flash (ms)"), _flashInterval
         });
 
@@ -270,7 +301,8 @@ internal sealed class SettingsDialog : Form
         {
             _bannerTextColorBtn,
             _flashAltBgColorBtn,
-            _resetBannerColorsBtn
+            _resetBannerColorsBtn,
+            MakeFieldLabel("UI Theme"), _themeCombo
         });
 
         bannerTable.Controls.Add(bannerRow0, 0, 0);
@@ -284,7 +316,7 @@ internal sealed class SettingsDialog : Form
 
         // Section 4: Auto-Targeting
         var targetGroup = CreateGroup("Automatic Player Targeting");
-        var targetTable = CreateStackTable(2);
+        var targetTable = CreateStackTable(3);
         foreach (var tm in Enum.GetValues<TargetMethod>())
         {
             _targetMethod.Items.Add(tm);
@@ -297,6 +329,7 @@ internal sealed class SettingsDialog : Form
         _restoreDelay.Value = (decimal)(double.IsFinite(_settings.RestoreTargetDelaySeconds)
             ? Math.Clamp(_settings.RestoreTargetDelaySeconds, 0.0, 5.0)
             : 0.2);
+        _raidKeymapLabel.Text = _engine.GetRaidKeymapSummary();
 
         var targetRow0 = CreateFlow();
         targetRow0.Controls.AddRange(new Control[]
@@ -315,6 +348,7 @@ internal sealed class SettingsDialog : Form
 
         targetTable.Controls.Add(targetRow0, 0, 0);
         targetTable.Controls.Add(targetRow1, 0, 1);
+        targetTable.Controls.Add(_raidKeymapLabel, 0, 2);
         targetGroup.Controls.Add(targetTable);
         root.Controls.Add(targetGroup, 0, 3);
 
@@ -391,6 +425,81 @@ internal sealed class SettingsDialog : Form
         AcceptButton = save;
         CancelButton = cancel;
         Controls.Add(root);
+        _themeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            UiTheme selected = (UiTheme)Math.Clamp(_themeCombo.SelectedIndex, 0, UiThemePalette.All.Length - 1);
+            ApplyTheme(root, UiThemePalette.For(selected));
+        };
+        ApplyTheme(root, UiThemePalette.For(_settings.Theme));
+    }
+
+    private void ApplyTheme(Control root, UiThemePalette pal)
+    {
+        Color baseBg = Color.FromArgb(pal.SurfaceBaseArgb);
+        Color cardBg = Color.FromArgb(pal.SurfaceContainerArgb);
+        Color btnBg = Color.FromArgb(pal.SurfaceControlArgb);
+        Color hoverBg = Color.FromArgb(pal.SurfaceHoverArgb);
+        Color outline = Color.FromArgb(pal.OutlineArgb);
+        Color primary = Color.FromArgb(pal.PrimaryArgb);
+        Color textPrimary = Color.FromArgb(pal.TextPrimaryArgb);
+        Color textMuted = Color.FromArgb(pal.TextMutedArgb);
+
+        BackColor = baseBg;
+        ForeColor = textPrimary;
+        root.BackColor = baseBg;
+        root.ForeColor = textPrimary;
+        _status.ForeColor = primary;
+        _raidKeymapLabel.ForeColor = primary;
+        _lsCompatibilityNoteLabel.ForeColor = textMuted;
+
+        void StyleChildren(Control parent)
+        {
+            foreach (Control c in parent.Controls)
+            {
+                switch (c)
+                {
+                    case GroupBox gb:
+                        gb.BackColor = cardBg;
+                        gb.ForeColor = primary;
+                        break;
+                    case CheckBox cb:
+                        cb.ForeColor = textPrimary;
+                        break;
+                    case Label lbl when lbl != _status && lbl != _raidKeymapLabel && lbl != _lsCompatibilityNoteLabel:
+                        lbl.ForeColor = textPrimary;
+                        break;
+                    case TextBox tb:
+                        tb.BackColor = baseBg;
+                        tb.ForeColor = textPrimary;
+                        tb.BorderStyle = BorderStyle.FixedSingle;
+                        break;
+                    case NumericUpDown num:
+                        num.BackColor = baseBg;
+                        num.ForeColor = textPrimary;
+                        break;
+                    case ComboBox combo:
+                        combo.BackColor = baseBg;
+                        combo.ForeColor = textPrimary;
+                        combo.FlatStyle = FlatStyle.Flat;
+                        break;
+                    case Button btn when !btn.Name.EndsWith("ColorButton", StringComparison.Ordinal):
+                        btn.UseVisualStyleBackColor = false;
+                        btn.FlatStyle = FlatStyle.Flat;
+                        btn.BackColor = btnBg;
+                        btn.ForeColor = textPrimary;
+                        btn.FlatAppearance.BorderColor = outline;
+                        btn.FlatAppearance.MouseOverBackColor = hoverBg;
+                        break;
+                }
+
+                if (c.HasChildren && c is not NumericUpDown)
+                {
+                    StyleChildren(c);
+                }
+            }
+        }
+
+        StyleChildren(root);
     }
 
     internal void SetBannerColorHex(string buttonName, string hex)
@@ -569,7 +678,15 @@ internal sealed class SettingsDialog : Form
                 return;
             }
 
-            var seenHotkeys = new Dictionary<HotkeyBinding, string>(7);
+            // Preserve HUD positions, focused player, DH 5-only settings, live gamification stats, and untouched states.
+            var live = _engine.GetSettings();
+
+            var seenHotkeys = new Dictionary<HotkeyBinding, string>(8);
+            if (!live.QuickCastCriticalHotkey.IsEmpty)
+            {
+                seenHotkeys[live.QuickCastCriticalHotkey] = "Quick-Cast Critical (DH 5)";
+            }
+
             foreach (var entry in _hotkeyEntries)
             {
                 var binding = entry.Getter();
@@ -583,12 +700,18 @@ internal sealed class SettingsDialog : Form
                 seenHotkeys[binding] = entry.ActionName;
             }
 
-            // Preserve HUD positions, focused player, live gamification stats, and untouched active/banner/mode states.
-            var live = _engine.GetSettings();
             _settings.HudX = live.HudX;
             _settings.HudY = live.HudY;
             _settings.StatusHudX = live.StatusHudX;
             _settings.StatusHudY = live.StatusHudY;
+            _settings.RaidHudEnabled = live.RaidHudEnabled;
+            _settings.RaidHudX = live.RaidHudX;
+            _settings.RaidHudY = live.RaidHudY;
+            _settings.QuickHealHotbar = live.QuickHealHotbar;
+            _settings.QuickHealSlot = live.QuickHealSlot;
+            _settings.QuickRaiseHotbar = live.QuickRaiseHotbar;
+            _settings.QuickRaiseSlot = live.QuickRaiseSlot;
+            _settings.QuickCastCriticalHotkey = live.QuickCastCriticalHotkey;
             _settings.FocusedPlayerId = live.FocusedPlayerId;
             _settings.FocusedPlayerName = live.FocusedPlayerName;
             _settings.CopyLiveStatsFrom(live);
@@ -598,6 +721,7 @@ internal sealed class SettingsDialog : Form
                 ? (_mode.SelectedItem is TrackingMode mode ? mode : TrackingMode.Party)
                 : live.Mode;
             _settings.IncludeSelfInPartyMode = _includeSelf.Checked;
+            _settings.IncludeTempHpInThreshold = _includeTempHp.Checked;
             _settings.SuppressAlertsInTown = _suppressInTown.Checked;
             _settings.HpThresholdPercent = (int)_threshold.Value;
             _settings.RecoveryHysteresisPercent = (int)_hysteresis.Value;
@@ -614,9 +738,11 @@ internal sealed class SettingsDialog : Form
             _settings.FontSizePixels = fontPixels;
             _settings.BannerOpacity = (int)_bannerOpacity.Value;
             _settings.FlashBanner = _flashBanner.Checked;
+            _settings.ShowBannerHpBar = _showBannerHpBar.Checked;
             _settings.FlashIntervalMs = (int)_flashInterval.Value;
             _settings.StatusHudEnabled = _statusHudEnabled.Checked;
             _settings.StatusFontSizePixels = statusFontPixels;
+            _settings.Theme = (UiTheme)Math.Clamp(_themeCombo.SelectedIndex, 0, UiThemePalette.All.Length - 1);
             _settings.SoundOnAlert = _soundOnAlert.Checked;
             _settings.ExcludeFromCapture = _excludeCapture.Checked;
             _settings.LowHpBgHex = _lowHpBgHex;
@@ -741,6 +867,7 @@ internal sealed class SettingsDialog : Form
     {
         Text = text,
         AutoSize = true,
+        ForeColor = TextPrimary,
         Padding = new Padding(4, 6, 4, 0)
     };
 

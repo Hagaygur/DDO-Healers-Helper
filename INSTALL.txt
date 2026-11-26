@@ -1,32 +1,36 @@
-DDO HEALER'S HELPER 1.0.0
+DDO HEALER'S HELPER 1.4.0
 
-INSTALL HealersHelper-1.0.0-plugin.zip DIRECTLY. It contains only three runtime files.
-HealersHelper-1.0.0-source.zip is separate; do NOT import it into Dungeon Helper.
+CHOOSE THE ARCHIVE MATCHING YOUR DUNGEON HELPER VERSION.
+HealersHelper-X.Y.Z-source.zip is separate; do NOT import it into Dungeon Helper.
 
+=== DUNGEON HELPER 4 (4.2.x, .NET 8 Windows) ===
 1. Close DDO. Open Dungeon Helper Settings > Add plugin from zip file.
-2. Select HealersHelper-1.0.0-plugin.zip.
+2. Select HealersHelper-X.Y.Z-dh4-plugin.zip (contains plugins/HealersHelper/VoK.HealersHelper.{dll,deps.json,metadata}).
 3. If asked to overwrite the already-installed HealersHelper folder, choose Yes.
 4. Fully exit Dungeon Helper from its tray icon, restart it, then launch DDO.
 
-If DH refuses the update or reports a file in use:
-Fully close DDO and Dungeon Helper. Extract the ZIP. Copy the CONTENTS of
-plugins\HealersHelper into your existing installation's plugins\HealersHelper
-folder, replacing files. Usually this is:
-%APPDATA%\Dungeon Helper\plugins\HealersHelper\
-Do not copy the DLL into a second plugin folder. Keep settings/logs.
+If DH 4 refuses the update or reports a file in use:
+Fully close DDO and Dungeon Helper, extract plugins\HealersHelper\* into:
+  %APPDATA%\Dungeon Helper\plugins\HealersHelper\
+Keep your existing healers-helper.json settings file.
+
+=== DUNGEON HELPER 5 BETA (5.0.x / VoK.Sdk 5.3.0, .NET 10 x64 In-Process ImGui) ===
+1. Close DDO. Open Dungeon Helper 5 Beta -> Plugins -> Install from zip.
+2. Select HealersHelper-X.Y.Z-dh5-plugin.zip (Authenticode + community entitlement signed; archive root files).
+3. Enable "Healers Helper" and launch DDO (DX10 or DX11 required).
+4. Manual fallback folder: %LocalAppData%\DungeonHelperData\plugins\Healers Helper\
 
 USE
-Open the DDO Healer's Helper panel in Dungeon Helper.
-Configure Mode (Party, Single Player, Off), Threshold %, Dead Alert seconds,
-Banner font size (18-140 px, default 56), Status font size (9-48 px, default 14),
-Flash interval (100-1000 ms, default 250), and Auto-Target / Hotkeys (default
-Ctrl+Shift+K ON/OFF, Ctrl+Shift+H Focus, Ctrl+Shift+J Mode, Ctrl+Shift+T Target Critical).
-
-Click Preview Banner, then Move Banner / Move Status (20s) to drag each HUD to
-your preferred monitor-relative position. Close the DH control panel while
-playing; the separate transparent click-through HUDs stay active.
-Enable Lossless Scaling and test Preview Banner in both WGC and DXGI.
-
-The status should say Capture exclusion: ON. This means Windows accepted the
-WDA_EXCLUDEFROMCAPTURE setting; it is not proof that every LS capture backend
-honors it. Live DDO and LS testing is still required.
+- DH 4: Open the DDO Healer's Helper panel in DH. Both the center banner and compact
+  status HUD render as independent click-through layered windows with
+  WDA_EXCLUDEFROMCAPTURE (0x11) and Wine/Proton guards (IsWineRuntime).
+  Test Preview Banner with Lossless Scaling (WGC and DXGI) with the panel closed.
+- DH 5 Beta: Click the toolbar icon (or configure via /hh commands in DDO chat).
+  HUDs draw natively inside DDO's DX10/11 frame via ImGuiNET with zero external
+  overlay HWND. Configure optional Quick-Heal / Quick-Raise hotbar slots (0 = Disabled)
+  for targetless InvokeHotbar casting without dropping your Boss/Tank target.
+- Default Hotkeys: Ctrl+Shift+K ON/OFF, Ctrl+Shift+H Focus, Ctrl+Shift+J Mode,
+  Ctrl+Shift+T Target Critical. Optional hotkeys: Toggle Banner, Quick-Cast Critical,
+  Reset Saved, Copy Scorecard.
+- 3 Shared Themes (Settings -> Theme or /hh theme <eberron|cannith|feywild>):
+  Eberron Obsidian & Gold (default), House Cannith Arcane Forge, Feywild Eldritch Twilight.

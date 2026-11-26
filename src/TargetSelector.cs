@@ -140,4 +140,16 @@ internal sealed class TargetSelector
     }
 
     public void ResetCooldown() => _nextAutoAllowedAt = 0;
+
+    public string GetRaidKeymapSummary()
+    {
+        if (_data?.Keymap is null)
+            return TargetPolicy.EvaluateRaidKeymapReadiness(null).Summary;
+
+        return TargetPolicy.EvaluateRaidKeymapReadiness(action =>
+        {
+            try { return _data.Keymap.GetHotkey(action) is not null; }
+            catch { return false; }
+        }).Summary;
+    }
 }

@@ -21,14 +21,26 @@ lookup = subprocess.run(['gh', 'release', 'view', tag, '--json', 'isDraft'], cap
 if lookup.returncode == 0 and not json.loads(lookup.stdout)['isDraft']:
     print(f'{tag} already published; leaving its assets unchanged')
     raise SystemExit(0)
-notes = f"Version {info['version']} ({info['bump']}).\n\n" + '\n'.join('- ' + r for r in info['reasons'])
-notes += '\n\nInstall the **plugin.zip** asset. The source ZIP is separate and must not be installed in Dungeon Helper.\n'
+ver = info['version']
+notes = f"Version {ver} ({info['bump']}).\n\n" + '\n'.join('- ' + r for r in info['reasons'])
+notes += (
+    f'\n\n### Choose the ZIP matching your Dungeon Helper version\n'
+    f'- **Dungeon Helper 4 (`4.2.x`):** Download `HealersHelper-{ver}-dh4-plugin.zip` -> **Settings -> Add plugin from zip file**.\n'
+    f'- **Dungeon Helper 5 Beta (`5.0.x` / `VoK.Sdk 5.3.0`):** Download `HealersHelper-{ver}-dh5-plugin.zip` (Authenticode + community entitlement signed) -> **Plugins -> Install from zip**.\n'
+    f'- **Source archive:** `HealersHelper-{ver}-source.zip` is separate and must not be installed in Dungeon Helper.\n'
+)
 Path('dist/release-notes.md').write_text(notes)
 if lookup.returncode != 0:
     run('gh', 'release', 'create', tag, '--target', commit, '--draft', '--title', tag,
         '--notes-file', 'dist/release-notes.md')
-assets = sorted(str(p) for p in Path('dist').glob('*.zip'))
-assets += ['dist/contracts.json', 'dist/version.json', 'dist/SHA256SUMS.txt']
+assets = [
+    f'dist/HealersHelper-{ver}-dh4-plugin.zip',
+    f'dist/HealersHelper-{ver}-dh5-plugin.zip',
+    f'dist/HealersHelper-{ver}-source.zip',
+    'dist/contracts.json',
+    'dist/version.json',
+    'dist/SHA256SUMS.txt',
+]
 run('gh', 'release', 'upload', tag, *assets, '--clobber')
 run('gh', 'release', 'edit', tag, '--draft=false', '--latest')
 print(f'Published {tag}')

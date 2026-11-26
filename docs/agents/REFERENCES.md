@@ -4,21 +4,19 @@ Human counterpart and annotated source table: [References](../human/REFERENCES.m
 
 ## Primary entry points
 
-- Dungeon Helper: https://dungeonhelper.com/ and https://dungeonhelper.com/frequently-asked-questions/
-- SDK documentation: https://sdk.dungeonhelper.com/
-- SDK package metadata: https://www.nuget.org/packages/VoK.Sdk/
-- Windows capture affinity: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity
-- Layered drawing: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-updatelayeredwindow
-- Window flags: https://learn.microsoft.com/en-us/windows/win32/winmsg/extended-window-styles
+- Dungeon Helper 4: https://dungeonhelper.com/ | SDK docs: https://sdk.dungeonhelper.com/
+- Dungeon Helper 5 Beta: https://beta.dungeonhelper.com/ | SDK 5.3.0 docs: http://sdk.dungeonhelper.com/5.3.0/
+- SDK NuGet package (`VoK.Sdk` `5.3.0`): https://www.nuget.org/packages/VoK.Sdk/5.3.0
+- Open-source DH 5 reference plugin (`Aligner`): https://gitlab.com/VaultOfKundarak/aligner
+- Windows capture exclusion & layered HUD APIs: `SetWindowDisplayAffinity`, `UpdateLayeredWindow`, Extended Window Styles on Microsoft Learn
 - Agent Markdown convention: https://agents.md/
 
 ## Evidence rules
 
-- Always inspect the pinned local assembly (`VoK.Sdk.dll` `4.2.1.0`, `DungeonHelper.dll` `4.2.0.146`) rather than inferring API semantics from newer NuGet versions (`4.3.x+`).
-- Key verified local semantics in `DungeonHelper.dll` `4.2.0.146`:
-  - `GetPartyMembers()` excludes the local character and caches `IPartyMember` getters until `Refresh()`.
-  - `IEntity` exposes signed `Int32` `HitPoints_Current` (negative when incapacitated), `HitPoints_Max`, `HitPoints_Temp`, and `LifeState` (`Undef=0`, `Dead=2`, `Incapacitated=3`, `Alive=4`).
-  - `SelectObject(ulong)` sends an MMF command to `dndpl.dll` with zero subscription checks; `GetSelectedObjectId()` returns `(ulong?)0` when unselected.
-  - `EventProvider.KeyDown` requires `HotKeysEnabled`; foreground-gated `GetAsyncKeyState` polling covers the disabled-hotkey case.
-  - Local `ddo.keymap` maps `TARGET_FELLOW_1_KEY`..`6_KEY` (`DIK_F1`..`DIK_F6`) and leaves `TARGET_SELF_KEY` and slots 7–12 unbound.
-- Keep user logs, character names from live captures, and downloaded SDK binaries out of source control and release archives.
+- Always inspect pinned binaries (`VoK.Sdk.dll` `4.2.1.0` + `DungeonHelper.dll` `4.2.0.146` for DH 4; `VoK.Sdk.dll` `5.3.0.0` + `DungeonHelper.dll` `5.0.858.0` for DH 5 Beta) rather than guessing API semantics.
+- Key verified DH 5 (`5.0.858` / `5.3.0.0`) semantics:
+  - `VoK.Sdk.IPlugin` (`[PluginId]`, `[PluginName]`, `[PluginIcon]`, `WindowVisible`, `ClientFrameStep`, `ImGui_Render`) replaces `IDdoPlugin` + `IPluginUI`.
+  - `IEntityExtensions.LifeState(entity)` reads property `0x10000E0C` from `InstanceProperties`, requiring `await entity.UpdateProperties([0x10000E0Cu])` for live death/incapacitation updates.
+  - `InvokeHotbar(bar, slot, targetId)` acts without dropping the player's current hard target.
+  - `PluginTrustGate` requires Authenticode + `.pem` + `.manifest(.sig)` + DH-issuer-signed `.entitlement(.sig)` at archive root.
+- Keep private keys (`*.key`, `*.pfx`), user logs, character names from live captures, and downloaded SDK binaries out of source control and release archives.

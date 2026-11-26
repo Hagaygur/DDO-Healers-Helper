@@ -3,30 +3,27 @@
 Human counterpart: [Operations](../human/OPERATIONS.md). Detailed CI reference: [GITHUB.md](../../GITHUB.md). IDE setup: [Development](DEVELOPMENT.md).
 
 1. Read `AGENTS.md` and the guide matching the task. Inspect current code rather than treating docs as newer evidence.
-2. Keep changes scoped. Do not upgrade `VoK.Sdk` beyond `4.2.1.0`, recreate plugin identity, or add non-runtime files to the plugin ZIP.
-3. Run relevant pure tests (`py -3 -m unittest discover -s ci -p "test_*.py" -v`, `HealersHelper.Tests`), `check_build_output.py`, and on Windows also run `WindowsSmoke`. Report unavailable checks explicitly.
-4. **Mandatory per-version `README.md` & docs sync:** At the end of every version/release, update `README.md` (features, settings/hotkeys tables covering 100% of `Settings` properties, gamification/options explainer, verified test counts, and `## Release history`) AND synchronize both `docs/human/*` and `docs/agents/*` in the same commit (`ci/test_version.py` enforces `README.md` coverage automatically).
+2. Keep changes scoped. Do not upgrade `VoK.Sdk` beyond `4.2.1.0` (DH 4) / `5.3.0.0` (DH 5), recreate plugin IDs, or add secrets/docs/SDKs to plugin or source ZIPs.
+3. Run all checks relevant to the change: `py -3 -m unittest discover -s ci -p "test_*.py" -v`, `HealersHelper.Tests`, `check_build_output.py` (`--target dh4` and `--target dh5`), `WindowsSmoke`, and `Dh5Smoke` (`--require-signed` for signed bundles).
+4. **Mandatory per-version `README.md` & docs sync:** At the end of every version/release, update `README.md` (features, all `Settings` properties, all 8 prestige ranks, `### Gamification options explainer`, verified test counts, and `## Release history`) AND synchronize both `docs/human/*` and `docs/agents/*` in the same commit (`ci/test_version.py` enforces `README.md` coverage and secret hygiene automatically).
 5. Inspect version impact and archive contents. No failing test may be reinterpreted as a successful major release.
 
 ## CI file map
 
-- `.github/workflows/build.yml`: parallel `linux` and `build` (Windows) jobs, plus gated `release` job.
-- `ci/Get-Sdk.ps1` + `ci/sdk-lock.json`: Windows MSI extraction and exact SHA-256 + version `4.2.1.0` verification.
-- `ci/get_sdk_linux.py`: Linux MSI extraction via `msitools` (`msiextract`) with the same SHA-256 verification.
-- `ci/PackagePlugin.targets`: MSBuild packaging target producing `HealersHelper-$(Version)-plugin.zip` (DLL first; Release=ZIP-only, Debug=loose+PDB+ZIP).
-- `ci/check_build_output.py`: validates Debug and Release output directories and ZIP contents on Windows and Linux.
-- `tests/ContractSnapshot.cs`: emits `dist/contracts.json` (`schema: 1`) after all C# behavioral assertions pass.
-- `ci/version.py` + `ci/test_version.py`: contract diff classification (`patch`/`minor`/`major`), `src/**/*.cs` release gating, conventional commit escalation, and same-commit draft retry.
-- `build.ps1`: stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` (only when changed, preserving LF and UTF-8 without BOM), runs Release build, verifies 3-entry ZIP, runs `HealersHelper.Tests`, and copies ZIP to `dist/`.
-- `tests/WindowsSmoke/`: loads `VoK.HealersHelper.dll` directly from the Release ZIP, validates `IDdoPlugin` contract, synthetic 720px toolbar / minimum-size dialog layout (no clipping), and native layered banner surface / window styles. Does not attach to DDO or emulate LS.
-- `ci/package.py`: validates plugin ZIP and builds separate `HealersHelper-<version>-source.zip` + `dist/SHA256SUMS.txt`.
-- `ci/release.py`: verifies tag ownership, uploads draft assets, and publishes when `publish == true`.
+- `.github/workflows/build.yml`: parallel `linux` (with `msitools` + `osslsigncode` + `Dh5Smoke`) and `build` (Windows, `WindowsSmoke` + `Dh5Smoke`), plus gated `release` job.
+- `ci/sdk-lock.json` + `ci/Get-Sdk.ps1` + `ci/get_sdk_linux.py`: SHA-256 pinned DH 4 (`4.2.1.0` MSI) and DH 5 (`5.3.0.0` NuGet) SDK extraction.
+- `ci/Healers Helper.entitlement` + `ci/Healers Helper.entitlement.sig`: public DH 5 community entitlement pair (matching `pluginId: 54b48548-05ff-48cf-bce1-c6270e3d4a3f`).
+- `ci/sign_dh5.py`: ephemeral Authenticode + `.pem` + `.manifest(.sig)` + root-ZIP packager using `DH_AUTHOR_KEY_B64` / `DH_AUTHOR_KEY_FILE` / `--key-file` (Windows `signtool.exe` via legacy-compatible empty-password PFX; Linux `osslsigncode`; cleans temp dir in `finally:`; `--allow-unsigned` strictly for untrusted fork PRs).
+- `ci/PackagePlugin.targets` + `ci/check_build_output.py`: builds/validates DH 4 (`*-dh4-plugin.zip`) and DH 5 build directories.
+- `tests/ContractSnapshot.cs`: emits `dist/contracts.json` (`schema: 1`) after all C# assertions pass.
+- `ci/version.py` + `ci/test_version.py`: contract diff classification, `src/**/*.cs` + `src-dh5/**/*.cs` release gating, secret-hygiene tests, and `README.md` sync checks.
+- `build.ps1`: stamps both `src/` and `src-dh5/` versions (LF, UTF-8 without BOM), builds Release DH 4 + DH 5, signs/packages `dist/HealersHelper-<ver>-dh5-plugin.zip`, runs `HealersHelper.Tests`, and copies `dist/HealersHelper-<ver>-dh4-plugin.zip`.
+- `tests/WindowsSmoke/` & `tests/Dh5Smoke/`: DH 4 WinForms/DIB smoke suite and cross-platform DH 5 trust-gate/PE-token/async-hydration/ImGui-contract smoke suite.
+- `ci/package.py` + `ci/release.py`: validates both plugin ZIPs, builds `HealersHelper-<ver>-source.zip`, writes `dist/SHA256SUMS.txt`, and publishes both ZIPs.
 
-## Version classification & packaging rules
+## Archive & release rules
 
-- Publication gates on `CODE_PATHSPEC = ':(glob)src/**/*.cs'` between baseline tag and `HEAD`. Docs/tests/CI/metadata changes alone build artifacts with `publish: false`.
-- Installer entries in exact order:
-  1. `plugins/HealersHelper/VoK.HealersHelper.dll`
-  2. `plugins/HealersHelper/VoK.HealersHelper.deps.json`
-  3. `plugins/HealersHelper/VoK.HealersHelper.metadata`
-- Source archives must include `src/`, `tests/`, `ci/`, `.github/`, `.vscode/`, `docs/`, and root config/docs (`README.md`, `INSTALL.txt`, `GITHUB.md`, `AGENTS.md`, `LICENSE.txt`, `build.ps1`, `.gitignore`, `HealersHelper.sln`, `global.json`, `.vsconfig`, `.editorconfig`, `.gitattributes`), while excluding `bin/`, `obj/`, `__pycache__/`, `dist/`, and `.build/`.
+- Publication gates on `CODE_PATHSPECS = (':(glob)src/**/*.cs', ':(glob)src-dh5/**/*.cs')`.
+- DH 4 ZIP entries in exact order: `plugins/HealersHelper/VoK.HealersHelper.{dll,deps.json,metadata}`.
+- DH 5 signed ZIP exact 8 archive-root entries: `Healers Helper.entitlement`, `Healers Helper.entitlement.sig`, `Healers Helper.manifest`, `Healers Helper.manifest.sig`, `Healers Helper.pem`, `VoK.HealersHelper.deps.json`, `VoK.HealersHelper.dll`, `plugin.metadata`.
+- Source archive must exclude `bin/`, `obj/`, `__pycache__/`, `.sdk-cache/`, `.build/`, `dist/`, `*.key`, `*.pfx`, `signing.*`.

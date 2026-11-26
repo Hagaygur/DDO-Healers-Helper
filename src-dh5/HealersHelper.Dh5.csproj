@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>VoK.HealersHelper</AssemblyName>
+    <RootNamespace>VoK.HealersHelper</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyTitle>Healers Helper</AssemblyTitle>
+    <Product>Healers Helper</Product>
+    <Authors>Warned</Authors>
+    <Company>Warned</Company>
+    <Description>DDO Healer's Helper for Dungeon Helper 5 Beta: 3-state life/death triage banner, Temp HP shields, targetless InvokeHotbar quick-heal/raise, and optional ImGui Raid HUD</Description>
+    <Nullable>enable</Nullable>
+    <LangVersion>13.0</LangVersion>
+    <Deterministic>true</Deterministic>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DungeonHelper5Dir Condition="'$(DungeonHelper5Dir)' == '' And '$(DH5_SDK_DIR)' != ''">$(DH5_SDK_DIR)</DungeonHelper5Dir>
+    <DungeonHelper5Dir Condition="'$(DungeonHelper5Dir)' == ''">$(MSBuildThisFileDirectory)../.sdk-cache/dh5</DungeonHelper5Dir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="VoK.Sdk">
+      <HintPath>$(DungeonHelper5Dir)/VoK.Sdk.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/Icon.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../src/Contracts.cs" Link="Shared/Contracts.cs" />
+    <Compile Include="../src/UiThemePalette.cs" Link="Shared/UiThemePalette.cs" />
+    <Compile Include="../src/Settings.cs" Link="Shared/Settings.cs" />
+    <Compile Include="../src/OfflineSettingsEngineView.cs" Link="Shared/OfflineSettingsEngineView.cs" />
+    <Compile Include="../src/HotkeyMatcher.cs" Link="Shared/HotkeyMatcher.cs" />
+    <Compile Include="../src/HealerStats.cs" Link="Shared/HealerStats.cs" />
+    <Compile Include="../src/PeopleSavedTracker.cs" Link="Shared/PeopleSavedTracker.cs" />
+    <Compile Include="../src/TargetRestoreTracker.cs" Link="Shared/TargetRestoreTracker.cs" />
+    <Compile Include="../src/HealerState.cs" Link="Shared/HealerState.cs" />
+    <Compile Include="../src/BannerPresentation.cs" Link="Shared/BannerPresentation.cs" />
+    <Compile Include="../src/StatusHudPresentation.cs" Link="Shared/StatusHudPresentation.cs" />
+  </ItemGroup>
+
+  <Target Name="CheckDh5Sdk" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(DungeonHelper5Dir)/VoK.Sdk.dll')" Text="DH 5 VoK.Sdk.dll (5.3.0.0) not found at '$(DungeonHelper5Dir)'. Set DH5_SDK_DIR or -p:DungeonHelper5Dir=&lt;dir&gt;." />
+  </Target>
+</Project>

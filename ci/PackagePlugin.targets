@@ -31,13 +31,13 @@
   </UsingTask>
   <Target Name="PackageHealersHelper" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
     <PropertyGroup>
-      <PluginArchive>$(TargetDir)HealersHelper-$(Version)-plugin.zip</PluginArchive>
+      <PluginArchive>$(TargetDir)HealersHelper-$(Version)-dh4-plugin.zip</PluginArchive>
     </PropertyGroup>
     <CreateHealersHelperInstaller OutputDirectory="$(TargetDir)" ArchivePath="$(PluginArchive)" />
     <ItemGroup>
       <FileWrites Include="$(PluginArchive)" />
       <!-- Remove only this project's known products, never arbitrary output files. -->
-      <_OldPluginArchives Include="$(TargetDir)HealersHelper-*-plugin.zip" Exclude="$(PluginArchive)" />
+      <_OldPluginArchives Include="$(TargetDir)HealersHelper-*-plugin.zip;$(TargetDir)HealersHelper-*-dh4-plugin.zip" Exclude="$(PluginArchive)" />
       <_LoosePluginOutputs Include="$(TargetPath);$(TargetDir)$(TargetName).deps.json;$(TargetDir)$(TargetName).metadata;$(TargetDir)$(TargetName).pdb" Condition="'$(Configuration)' == 'Release'" />
     </ItemGroup>
     <Delete Files="@(_OldPluginArchives);@(_LoosePluginOutputs)" />
@@ -45,7 +45,7 @@
   </Target>
   <Target Name="CleanHealersHelperInstaller" AfterTargets="CoreClean">
     <ItemGroup>
-      <_PluginArchivesToClean Include="$(TargetDir)HealersHelper-*-plugin.zip;$(TargetDir)HealersHelper-*-plugin.zip.tmp" />
+      <_PluginArchivesToClean Include="$(TargetDir)HealersHelper-*-plugin.zip;$(TargetDir)HealersHelper-*-plugin.zip.tmp;$(TargetDir)HealersHelper-*-dh4-plugin.zip;$(TargetDir)HealersHelper-*-dh4-plugin.zip.tmp" />
     </ItemGroup>
     <Delete Files="@(_PluginArchivesToClean)" />
   </Target>

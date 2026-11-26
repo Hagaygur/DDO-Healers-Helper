@@ -504,7 +504,7 @@ internal sealed class BannerHudWindow : Form
     }
 
     private static string BuildRenderKey(BannerFrame frame, bool editing) =>
-        $"{frame.PrimaryText}|{frame.SecondaryText}|{frame.FontSizePixels}|{frame.FlashOn}|{frame.TextColorArgb}|{frame.BackgroundColorArgb}|{frame.BorderColorArgb}|{editing}";
+        $"{frame.PrimaryText}|{frame.SecondaryText}|{frame.FontSizePixels}|{frame.FlashOn}|{frame.TextColorArgb}|{frame.BackgroundColorArgb}|{frame.BorderColorArgb}|{frame.IsSoulstone}|{frame.HpBarPercent}|{frame.TempHitPoints}|{editing}";
 
     internal void TickFrame(double now)
     {
@@ -687,11 +687,16 @@ internal sealed class BannerHudWindow : Form
             int padY = Math.Clamp((int)Math.Round(16 * scale), 8, 40);
             int lineGap = Math.Clamp((int)Math.Round(8 * scale), 4, 20);
             int borderThickness = Math.Clamp((int)Math.Round(4 * scale), 2, 8);
+            bool hasHpBar = frame.HpBarPercent.HasValue;
+            int barHeight = hasHpBar ? Math.Clamp((int)Math.Round(7 * scale), 4, 12) : 0;
+            int barGap = hasHpBar ? Math.Clamp((int)Math.Round(6 * scale), 3, 12) : 0;
 
             float contentWidth = Math.Max(primaryBounds.Width, hasSecondary ? secondaryBounds.Width : 0f);
             int minBannerWidth = Math.Clamp((int)Math.Round(420 * scale), 180, 960);
             int width = Math.Max(minBannerWidth, (int)Math.Ceiling(contentWidth) + (padX * 2));
-            int height = (int)Math.Ceiling(primaryBounds.Height) + (padY * 2) + (hasSecondary ? (int)Math.Ceiling(secondaryBounds.Height) + lineGap : 0);
+            int height = (int)Math.Ceiling(primaryBounds.Height) + (padY * 2)
+                + (hasSecondary ? (int)Math.Ceiling(secondaryBounds.Height) + lineGap : 0)
+                + (hasHpBar ? barHeight + barGap : 0);
 
             bool sizeChanged = _surface.Size.Width != width || _surface.Size.Height != height;
             _surface.Resize(width, height);
@@ -753,6 +758,39 @@ internal sealed class BannerHudWindow : Form
             {
                 float half = borderThickness * 0.5f;
                 g.DrawRectangle(borderPen, half, half, width - borderThickness, height - borderThickness);
+            }
+
+            if (hasHpBar)
+            {
+                int barLeft = borderThickness + 8;
+                int barWidth = Math.Max(20, width - ((borderThickness + 8) * 2));
+                int barTop = height - borderThickness - barHeight - 4;
+                double pct = Math.Clamp(frame.HpBarPercent!.Value, 0.0, 100.0);
+                int fillWidth = (int)Math.Round(barWidth * (pct / 100.0));
+
+                using var trough = new SolidBrush(Color.FromArgb(215, 16, 19, 26));
+                g.FillRectangle(trough, barLeft, barTop, barWidth, barHeight);
+
+                Color fillColor = frame.IsSoulstone
+                    ? Color.FromArgb(255, 168, 127, 251)
+                    : pct <= 0.01
+                        ? Color.FromArgb(255, 255, 56, 72)
+                        : pct <= 35.0
+                            ? Color.FromArgb(255, 255, 110, 56)
+                            : Color.FromArgb(255, 255, 174, 66);
+                if (fillWidth > 0)
+                {
+                    using var fillBar = new SolidBrush(fillColor);
+                    g.FillRectangle(fillBar, barLeft, barTop, fillWidth, barHeight);
+                }
+
+                if (frame.TempHitPoints > 0 && !frame.IsSoulstone)
+                {
+                    int capWidth = Math.Clamp((int)Math.Round(barWidth * 0.14), 8, Math.Max(8, barWidth - fillWidth));
+                    int capLeft = Math.Min(barLeft + barWidth - capWidth, barLeft + fillWidth);
+                    using var thpBrush = new SolidBrush(Color.FromArgb(BannerPresentation.TempHpGoldArgb));
+                    g.FillRectangle(thpBrush, capLeft, barTop, capWidth, barHeight);
+                }
             }
 
             if (_editing)

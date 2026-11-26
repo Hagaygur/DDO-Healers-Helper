@@ -8,8 +8,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="WindowsSmoke/**/*.cs" />
+    <Compile Remove="Dh5Smoke/**/*.cs" />
     <Compile Include="../src/Contracts.cs" Link="Contracts.cs" />
+    <Compile Include="../src/UiThemePalette.cs" Link="UiThemePalette.cs" />
     <Compile Include="../src/Settings.cs" Link="Settings.cs" />
+    <Compile Include="../src/OfflineSettingsEngineView.cs" Link="OfflineSettingsEngineView.cs" />
     <Compile Include="../src/HotkeyMatcher.cs" Link="HotkeyMatcher.cs" />
     <Compile Include="../src/HealerStats.cs" Link="HealerStats.cs" />
     <Compile Include="../src/PeopleSavedTracker.cs" Link="PeopleSavedTracker.cs" />

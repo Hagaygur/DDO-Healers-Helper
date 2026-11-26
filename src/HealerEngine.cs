@@ -40,9 +40,13 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     private StreakTracker? _streakTracker = new();
     private ReflexTracker? _reflexTracker = new();
     private TargetRestoreTracker? _restoreTracker = new();
+    private HashSet<ulong>? _mutedPlayerIds = new();
+    private HashSet<string>? _mutedPlayerNames = new(StringComparer.OrdinalIgnoreCase);
     private StreakTracker Streak => _streakTracker ??= new StreakTracker();
     private ReflexTracker Reflex => _reflexTracker ??= new ReflexTracker();
     private TargetRestoreTracker Restore => _restoreTracker ??= new TargetRestoreTracker();
+    private HashSet<ulong> MutedIds => _mutedPlayerIds ??= new HashSet<ulong>();
+    private HashSet<string> MutedNames => _mutedPlayerNames ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private IntPtr _gameWindow;
     private int _gamePid;
@@ -174,6 +178,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 Restore.Reset();
                 _hotkeys.Reset();
                 _selector?.ResetCooldown();
+                MutedIds.Clear();
+                MutedNames.Clear();
                 _character = null;
                 _inTown = false;
                 Volatile.Write(ref _characterIdBits, 0L);
@@ -286,6 +292,80 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     {
         lock (_gate) Log(message);
     }
+
+    public bool IsPlayerMuted(ulong id, string? name)
+    {
+        lock (_gate) return IsPlayerMutedLocked(id, name);
+    }
+
+    public bool ToggleMutePlayer(ulong id, string? name)
+    {
+        lock (_gate)
+        {
+            if (_disposed) return false;
+            string cleanName = (name ?? "").Trim();
+            bool currentlyMuted = IsPlayerMutedLocked(id, cleanName);
+            if (currentlyMuted)
+            {
+                if (id != 0) MutedIds.Remove(id);
+                if (!string.IsNullOrEmpty(cleanName)) MutedNames.Remove(cleanName);
+                if (_settings.PluginEnabled)
+                    _state.SetNotice($"UNMUTED: {(string.IsNullOrEmpty(cleanName) ? $"ID {id}" : cleanName)}", "Alerts resumed for this player", 1.8, Now);
+                EvaluateLocked(Now);
+                return false;
+            }
+
+            if (id != 0) MutedIds.Add(id);
+            if (!string.IsNullOrEmpty(cleanName)) MutedNames.Add(cleanName);
+            if (_settings.PluginEnabled)
+                _state.SetNotice($"MUTED: {(string.IsNullOrEmpty(cleanName) ? $"ID {id}" : cleanName)}", "Session alerts suppressed (Pale Master / ignore)", 1.8, Now);
+            EvaluateLocked(Now);
+            return true;
+        }
+    }
+
+    public void ClearMutedPlayers()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            MutedIds.Clear();
+            MutedNames.Clear();
+            if (_settings.PluginEnabled)
+                _state.SetNotice("MUTES CLEARED", "All party members unmuted for this session", 1.8, Now);
+            EvaluateLocked(Now);
+        }
+    }
+
+    public IReadOnlyCollection<string> GetMutedPlayerNames()
+    {
+        lock (_gate)
+        {
+            if (MutedNames.Count == 0 && MutedIds.Count == 0)
+                return Array.Empty<string>();
+            var list = new List<string>(MutedNames);
+            foreach (ulong id in MutedIds)
+            {
+                var found = _members.FirstOrDefault(m => m.Id == id);
+                if (found is not null && !string.IsNullOrWhiteSpace(found.Name) && !MutedNames.Contains(found.Name))
+                    list.Add(found.Name);
+            }
+            return list;
+        }
+    }
+
+    public string GetRaidKeymapSummary() =>
+        _selector?.GetRaidKeymapSummary() ?? TargetPolicy.EvaluateRaidKeymapReadiness(null).Summary;
+
+    private bool IsPlayerMutedLocked(ulong id, string? name)
+    {
+        if (id != 0 && MutedIds.Contains(id)) return true;
+        if (!string.IsNullOrWhiteSpace(name) && MutedNames.Contains(name.Trim())) return true;
+        return false;
+    }
+
+    private bool IsMemberMutedLocked(WatchedMemberSnapshot member) =>
+        member is not null && IsPlayerMutedLocked(member.Id, member.Name);
 
     public void TogglePluginEnabled()
     {
@@ -713,8 +793,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
     private bool TargetCriticalLocked(double now, bool bypassCooldown)
     {
         WatchedMemberSnapshot[] current = _members;
-        AlertBannerView view = _state.Evaluate(current, _settings, now, targetingStatus: _selector.LastStatus, inTown: _inTown);
-        var watched = HealerState.FilterWatched(current, _settings);
+        AlertBannerView view = _state.Evaluate(current, _settings, now, targetingStatus: _selector.LastStatus, inTown: _inTown, isMuted: IsMemberMutedLocked);
+        var watched = HealerState.FilterWatched(current, _settings, IsMemberMutedLocked);
 
         WatchedMemberSnapshot? target = null;
         if (view.AlertPlayerId is { } alertId)
@@ -722,8 +802,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
         target ??= watched
             .Where(m => m.Connected && m.Id != 0)
-            .OrderBy(m => m.IsDeadOrDown ? 0 : 1)
-            .ThenBy(m => m.Percent)
+            .OrderBy(m => m.IsIncapacitated ? 0 : m.IsTrulyDead ? 2 : 1)
+            .ThenBy(m => m.EffectivePercent(_settings.IncludeTempHpInThreshold))
             .ThenBy(m => m.PartySlotIndex)
             .FirstOrDefault();
 
@@ -762,6 +842,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             Reflex.Reset();
             Restore.Reset();
             _selector?.ResetCooldown();
+            MutedIds.Clear();
+            MutedNames.Clear();
             _character = charId;
             _inTown = false;
             Volatile.Write(ref _characterIdBits, unchecked((long)(charId ?? 0)));
@@ -816,8 +898,11 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 maxHp = selfEntity.HitPoints_Max ?? 0;
             }
 
+            int tempHp = Math.Max(0, selfEntity.HitPoints_Temp ?? 0);
+            int sp = Math.Max(0, selfEntity.SpellPoints_Current ?? 0);
+            int maxSp = Math.Max(0, selfEntity.SpellPoints_Max ?? 0);
             bool isDown = explicitDown || (maxHp > 0 && hp <= 0);
-            list.Add(new WatchedMemberSnapshot(selfId, selfName, hp, maxHp, 0, true, isDown, isTrulyDead));
+            list.Add(new WatchedMemberSnapshot(selfId, selfName, hp, maxHp, 0, true, isDown, isTrulyDead, tempHp, sp, maxSp));
 
             int? currSp = selfEntity.SpellPoints_Current;
             if (_settings.PluginEnabled && _prevSelfSp.HasValue && currSp.HasValue && currSp.Value < _prevSelfSp.Value)
@@ -850,6 +935,9 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 bool hasLiveEntity = ent is not null && !ent.IsDeleted;
                 int hp = (hasLiveEntity ? ent!.HitPoints_Current : null) ?? m.HitPoints;
                 int maxHp = (hasLiveEntity ? ent!.HitPoints_Max : null) ?? m.MaxHitPoints;
+                int tempHp = Math.Max(0, (hasLiveEntity ? ent!.HitPoints_Temp : null) ?? 0);
+                int sp = Math.Max(0, (hasLiveEntity ? ent!.SpellPoints_Current : null) ?? m.SpellPoints);
+                int maxSp = Math.Max(0, (hasLiveEntity ? ent!.SpellPoints_Max : null) ?? m.MaxSpellPoints);
 
                 string name = !string.IsNullOrWhiteSpace(m.Name)
                     ? m.Name
@@ -859,7 +947,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 bool isDown = (hasLiveEntity && ent!.LifeState is LifeState.Dead or LifeState.Incapacitated)
                     || (m.Connected && maxHp > 0 && hp <= 0);
 
-                list.Add(new WatchedMemberSnapshot(m.Id, name, hp, maxHp, slot, m.Connected, isDown, isTrulyDead));
+                list.Add(new WatchedMemberSnapshot(m.Id, name, hp, maxHp, slot, m.Connected, isDown, isTrulyDead, tempHp, sp, maxSp));
             }
         }
 
@@ -875,7 +963,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             return;
         }
 
-        var watchedList = HealerState.FilterWatched(snapshot, _settings);
+        var watchedList = HealerState.FilterWatched(snapshot, _settings, IsMemberMutedLocked);
         var watchedArray = watchedList.ToArray();
 
         var updated = _settings.Copy();
@@ -967,13 +1055,16 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             maxHp = ent.HitPoints_Max ?? 0;
         }
 
+        int tempHp = Math.Max(0, ent.HitPoints_Temp ?? 0);
+        int sp = Math.Max(0, ent.SpellPoints_Current ?? 0);
+        int maxSp = Math.Max(0, ent.SpellPoints_Max ?? 0);
         bool isDown = explicitDown || (maxHp > 0 && hp <= 0);
         string name = !string.IsNullOrWhiteSpace(ent.Name)
             ? ent.Name
             : (!string.IsNullOrWhiteSpace(_settings.FocusedPlayerName)
                 ? _settings.FocusedPlayerName
                 : $"Player 0x{ent.InstanceId:X}");
-        list.Add(new WatchedMemberSnapshot(ent.InstanceId, name, hp, maxHp, -1, true, isDown, isTrulyDead));
+        list.Add(new WatchedMemberSnapshot(ent.InstanceId, name, hp, maxHp, -1, true, isDown, isTrulyDead, tempHp, sp, maxSp));
     }
 
     private void EvaluateLocked(double now)
@@ -986,7 +1077,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                 : "";
 
         string selectorStatus = _selector?.LastStatus ?? "Targeting ready";
-        AlertBannerView view = _state.Evaluate(current, _settings, now, statusLine, selectorStatus, _inTown);
+        AlertBannerView view = _state.Evaluate(current, _settings, now, statusLine, selectorStatus, _inTown, IsMemberMutedLocked);
 
         if (_settings.PluginEnabled
             && (view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown || view.AlertPlayerId.HasValue))
@@ -994,7 +1085,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
             if (view.Severity is BannerSeverity.LowHp or BannerSeverity.CriticalDown
                 && view.AlertPlayerId is { } alertId)
             {
-                if (_settings.SoundOnAlert && view.AlertGeneration != _lastSoundGen)
+                if (_settings.SoundOnAlert && !view.IsSoulstone && view.AlertGeneration != _lastSoundGen)
                 {
                     _lastSoundGen = view.AlertGeneration;
                     try { SystemSounds.Exclamation.Play(); }
@@ -1003,6 +1094,7 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
 
                 if (_selector is not null
                     && _settings.AutoTargetOnAlert
+                    && !view.IsSoulstone
                     && _settings.TargetingMethod != TargetMethod.Off
                     && view.AlertGeneration != _lastAutoTargetGen
                     && IsGameOrOverlayForeground())
@@ -1049,7 +1141,8 @@ internal sealed class HealerEngine : IHealerEngineView, IDisposable
                     view.AlertPlayerId,
                     _inTown,
                     IsGameOrOverlayForeground(),
-                    now) is { } candidate)
+                    now,
+                    IsMemberMutedLocked) is { } candidate)
             {
                 _selector?.TryRestore(candidate, _settings);
                 view = view with { TargetingStatus = _selector?.LastStatus ?? view.TargetingStatus };

@@ -45,14 +45,15 @@ def git(*args):
 
 
 CODE_PATHSPEC = ':(glob)src/**/*.cs'
+CODE_PATHSPECS = (CODE_PATHSPEC, ':(glob)src-dh5/**/*.cs')
 
 
 def code_changed(base):
     if not base:
-        return bool(git('ls-files', '-z', '--', CODE_PATHSPEC))
+        return bool(git('ls-files', '-z', '--', *CODE_PATHSPECS))
     # Compare the entire unreleased range. A later documentation commit must
     # not hide code from an earlier failed or coalesced workflow run.
-    return bool(git('diff', '--name-only', '-z', '--no-renames', base, 'HEAD', '--', CODE_PATHSPEC))
+    return bool(git('diff', '--name-only', '-z', '--no-renames', base, 'HEAD', '--', *CODE_PATHSPECS))
 
 
 def main():
@@ -83,7 +84,7 @@ def main():
     else:
         previous = json.loads(Path(args.previous).read_text(encoding='utf-8-sig'))
         level, reason = classify(previous, current)
-        declared = commit_level(git('log', '--format=%B', f'{base}..HEAD', '--', CODE_PATHSPEC))
+        declared = commit_level(git('log', '--format=%B', f'{base}..HEAD', '--', *CODE_PATHSPECS))
         ranks = {'patch': 0, 'minor': 1, 'major': 2}
         if ranks[declared] > ranks[level]:
             level = declared

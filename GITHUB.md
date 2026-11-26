@@ -2,74 +2,74 @@
 
 Repository: [**`Hagaygur/DDO-Healers-Helper`**](https://github.com/Hagaygur/DDO-Healers-Helper) (for **DDO Healer's Helper**).
 
-Developer entry points: [HealersHelper.sln](HealersHelper.sln), [human/agent documentation map](docs/README.md), and [AGENTS.md](AGENTS.md). Source release archives include the solution and editor configurations.
+Developer entry points: [HealersHelper.sln](HealersHelper.sln), [human/agent documentation map](docs/README.md), and [AGENTS.md](AGENTS.md). Source release archives include all five solution projects (`src/`, `src-dh5/`, `tests/`, `tests/WindowsSmoke/`, `tests/Dh5Smoke/`) and editor configurations.
 
-Toolchain: .NET 10 SDK builds .NET 8 targets for the pinned DH host. CI also installs .NET 8 to run compatibility tests. See [runtime/toolchain details](docs/human/DEVELOPMENT.md).
+Toolchain: .NET 10 SDK builds both the DH 4 `.NET 8 Windows` target (`VoK.Sdk 4.2.1.0`) and the DH 5 Beta `.NET 10 x64` target (`VoK.Sdk 5.3.0.0`). CI also installs .NET 8 to run DH 4 compatibility and `WindowsSmoke` tests. See [runtime/toolchain details](docs/human/DEVELOPMENT.md).
 
 ## Set up once
 
-1. Create a GitHub repository named `DDO-Healers-Helper` and push this repository's contents to the repository root, including `.github/workflows/build.yml`.
-2. Open **Actions -> Build, test and release** on GitHub.
-3. The first successful run on the default branch publishes **v1.0.0** under **Releases**. Download `HealersHelper-1.0.0-plugin.zip` and install it directly through DH. Never install the `-source.zip` inside DH's plugin folder.
-
-GitHub Actions and GitHub-hosted runners must be enabled. No personal access token, manually installed SDK, or extra secret is required; publication uses the repository's built-in token with `contents: write` in the `release` job.
+1. Push this repository to `Hagaygur/DDO-Healers-Helper` including `.github/workflows/build.yml` and the public community entitlement pair (`ci/Healers Helper.entitlement`, `ci/Healers Helper.entitlement.sig`).
+2. Add the repository Actions secret **`DH_AUTHOR_KEY_B64`** containing the base64-encoded PKCS#8 author private key matching `authorKeyFingerprint` in `ci/Healers Helper.entitlement` (never commit `*.key` or `*.pfx` files).
+3. Open **Actions -> Build, test and release** on GitHub. Successful default-branch runs publish tagged releases under **Releases**.
 
 ## Triggers and outputs
 
-Every branch push and pull request runs checks and produces downloadable Actions artifacts. Successful default-branch pushes and manual runs publish a tagged release only when plugin C# source (`src/**/*.cs`, including files directly under `src/`) differs from the last reachable stable release. Additions, edits, renames, and deletions count. Documentation, tests, CI/build scripts, project configuration, and metadata alone do not trigger publication or a version bump. Other branches and PRs do not publish or reserve release versions.
+Every branch push and pull request runs checks and produces downloadable Actions artifacts. Successful default-branch pushes and manual runs publish a tagged release only when plugin C# source (`src/**/*.cs` or `src-dh5/**/*.cs`) differs from the last reachable stable release. Additions, edits, renames, and deletions count. Documentation, tests, CI/build scripts, project configuration, and metadata alone do not trigger publication or a version bump. Other branches and PRs do not publish or reserve release versions.
 
-The comparison covers the entire unreleased range (`base..HEAD`), not just the last commit. With no previous release, tracked plugin source permits the initial `1.0.0` release.
+The comparison covers the entire unreleased range (`base..HEAD`), not just the last commit. With no previous release, tracked plugin source permits the initial `1.0.0` release. Untrusted fork PRs lacking `DH_AUTHOR_KEY_B64` validate unsigned DH 5 builds (`--allow-unsigned`), whereas publish/release builds fail unconditionally if DH 5 signing is missing.
 
 Release assets:
 
-- `HealersHelper-X.Y.Z-plugin.zip`: strictly `VoK.HealersHelper.dll`, `VoK.HealersHelper.deps.json`, and `VoK.HealersHelper.metadata` under `plugins/HealersHelper/`, with the DLL first.
-- `HealersHelper-X.Y.Z-source.zip`: source, workflow, tests, and documentation, entirely separate.
+- `HealersHelper-X.Y.Z-dh4-plugin.zip`: DH 4 runtime-only archive containing strictly `VoK.HealersHelper.dll`, `VoK.HealersHelper.deps.json`, and `VoK.HealersHelper.metadata` under `plugins/HealersHelper/`, DLL first.
+- `HealersHelper-X.Y.Z-dh5-plugin.zip`: DH 5 Beta archive-root bundle containing the exact 8 signed files (`Healers Helper.entitlement`, `Healers Helper.entitlement.sig`, `Healers Helper.manifest`, `Healers Helper.manifest.sig`, `Healers Helper.pem`, `VoK.HealersHelper.deps.json`, `VoK.HealersHelper.dll`, `plugin.metadata`).
+- `HealersHelper-X.Y.Z-source.zip`: source, workflow, tests, CI scripts, and documentation, entirely separate (never containing `*.key`, `*.pfx`, or downloaded SDK binaries).
 - `contracts.json`: observed behavior used for the next comparison.
 - `version.json`: chosen version, reason, baseline tag, and source commit.
-- `SHA256SUMS.txt`: asset SHA-256 hashes.
+- `SHA256SUMS.txt`: asset SHA-256 hashes covering both plugin ZIPs, source ZIP, `contracts.json`, and `version.json`.
 
 ## How versions are chosen
 
 The first stable release is `1.0.0`. Later successful builds compare their observed `dist/contracts.json` with `contracts.json` from the previous reachable stable release (`v*`):
 
-| Highest detected change | Result from 1.2.3 |
+| Highest detected change | Result from 1.3.0 |
 | --- | --- |
 | Existing compatibility observation changed/removed, or a feature observation removed | `2.0.0` |
-| New compatibility/feature observation, or changed feature observation | `1.3.0` |
-| All observations unchanged | `1.2.4` |
+| New compatibility/feature observation, or changed feature observation | `1.4.0` |
+| All observations unchanged | `1.3.1` |
 | Any test fails | No release |
 
-Conventional commits touching `src/**/*.cs` can raise (never lower) the bump: `fix:` -> patch, `feat:` -> minor, `feat!:` / `BREAKING CHANGE:` -> major. Documentation-only commit headers cannot trigger or escalate a release.
+Conventional commits touching `src/**/*.cs` or `src-dh5/**/*.cs` can raise (never lower) the bump: `fix:` -> patch, `feat:` -> minor, `feat!:` / `BREAKING CHANGE:` -> major. Documentation-only commit headers cannot trigger or escalate a release.
 
 ## Build and test stages
 
-1. **Python unit tests & README sync guard** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules, source package allowlist coverage, pinned SDK hash/failure handling, and that `README.md` documents 100% of `src/Settings.cs` public properties, all 8 prestige ranks, `### Gamification options explainer`, and `## Release history`. Every version/release commit must update `README.md` (including `## Release history` and verified counts) and `docs/{agents,human}/*` together.
-2. **Portable C# tests & contracts** (`tests/HealersHelper.Tests.csproj --contracts dist/contracts.json`): validates HP state machine, hysteresis, dead-alert timeout/recovery, single-player focus, `PeopleSavedTracker` clutch-save/MaxHP rules, hotkey matching/dedup/auto-repeat suppression, target selector guards, settings persistence, and banner + status HUD presentation.
+1. **Python unit tests, secret hygiene & README sync guard** (`ci/test_version.py`, `ci/test_get_sdk_linux.py`): verifies contract classification, git release range rules across `src/` + `src-dh5/`, source package allowlist coverage, zero tracked/packaged `.key`/`.pfx`/private PEM files, dual pinned SDK hash/failure handling, and that `README.md` documents 100% of `src/Settings.cs` public properties, all 8 prestige ranks, `### Gamification options explainer`, and `## Release history`.
+2. **Portable C# tests & contracts** (`tests/HealersHelper.Tests.csproj --contracts dist/contracts.json`): validates 3-state triage (Incapacitated > Living Low HP > Dead Soulstone), TempHP shields, session mute, raid keymap readiness, 3 `UiTheme` palettes, hysteresis, `PeopleSavedTracker`, `TargetRestoreTracker`, hotkey matching/dedup, settings persistence, `OfflineSettingsEngineView`, and banner + status HUD presentation.
 3. **Version selection** (`ci/version.py`): resolves next version and `publish` flag against the latest reachable stable release tag.
-4. **Pinned SDK acquisition** (`ci/Get-Sdk.ps1` on Windows, `ci/get_sdk_linux.py` on Ubuntu): downloads `DungeonHelper.msi`, verifies its SHA-256 and `VoK.Sdk.dll` SHA-256 (`4.2.1.0`) from `ci/sdk-lock.json`, and extracts without committing SDK binaries.
-5. **Debug & Release builds + output validation** (`ci/check_build_output.py`): verifies Debug keeps loose runtime files + PDB + ZIP and Release keeps only `HealersHelper-<version>-plugin.zip` (plus repeat Release build on Linux).
-6. **Windows smoke harness** (`tests/WindowsSmoke/WindowsSmoke.csproj`): loads `VoK.HealersHelper.dll` directly from the Release ZIP, verifies assembly metadata/platform attributes, exercises `HealersHelperUi` (`380px` and `720px`) and `SettingsDialog` (minimum size, hotkey `Escape`/`Backspace`/duplicate checks, `TogglePluginEnabled`, `ResetPeopleSaved`) without clipping, and checks native `BannerHudWindow` + `StatusHudWindow` rendering and extended window styles (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`).
-7. **Package & checksums** (`ci/package.py`): validates the 3-entry plugin ZIP, builds the source ZIP, and writes `dist/SHA256SUMS.txt`.
-8. **Release** (`ci/release.py`): runs only when both `build` (Windows) and `linux` (Ubuntu) pass on the default branch with `publish == 'true'`.
-
-The official MSI URL may change upstream; if so, the pinned hash check fails intentionally. Verify the new installer and SDK deliberately before updating `ci/sdk-lock.json`.
+4. **Dual pinned SDK acquisition** (`ci/Get-Sdk.ps1` on Windows, `ci/get_sdk_linux.py` on Ubuntu): verifies and extracts both DH 4 `DungeonHelper.msi` (`VoK.Sdk.dll` `4.2.1.0`) and DH 5 `vok.sdk.5.3.0.nupkg` (`VoK.Sdk.dll` `5.3.0.0`) from `ci/sdk-lock.json` without committing SDK binaries.
+5. **Debug & Release builds + output validation** (`ci/check_build_output.py`): validates DH 4 (`src/bin/{Debug,Release}/net8.0-windows`) and DH 5 (`src-dh5/bin/x64/{Debug,Release}/net10.0`) build outputs on both Windows and Linux (plus repeat Release build on Linux).
+6. **Ephemeral DH 5 Authenticode + Manifest signing** (`ci/sign_dh5.py`): decodes `DH_AUTHOR_KEY_B64` into an ephemeral temp directory (cleaned up in `finally:`), verifies SPKI fingerprint match against `ci/Healers Helper.entitlement`, Authenticode-signs `VoK.HealersHelper.dll` via Windows `signtool.exe` (ephemeral legacy-compatible PFX) or Linux `osslsigncode`, writes `Healers Helper.pem`, `plugin.metadata`, `.manifest`, and `.manifest.sig`, and produces `HealersHelper-<version>-dh5-plugin.zip`.
+7. **Dual smoke harnesses**:
+   - **Windows DH 4 smoke (`tests/WindowsSmoke/WindowsSmoke.csproj`)**: loads `VoK.HealersHelper.dll` from `*-dh4-plugin.zip`, exercises `HealersHelperUi` (`380px` and `720px`), `SettingsDialog` (3 `UiTheme` combos, `IncludeTempHpCheckBox`, `ShowBannerHpBarCheckBox`, `RaidKeymapReadinessLabel`, 6 color pickers, 7 hotkeys, dirty-tracking), and native `BannerHudWindow` + `StatusHudWindow` rendering and `WS_EX_*` styles.
+   - **Cross-platform DH 5 smoke (`tests/Dh5Smoke/Dh5Smoke.csproj`, Windows + Linux)**: inspects `*-dh5-plugin.zip` (`--require-signed` verifying DH 5 `IssuerKeys`, SPKI fingerprint, `.manifest(.sig)` bidirectional SHA-256, and Windows `WinVerifyTrust`), verifies 0 WinForms/`System.Media` refs and 0 unresolved PE tokens in an isolated `AssemblyLoadContext` against `VoK.Sdk 5.3.0.0`, and exercises async `TickAsync` (`UpdateProperties([0x10000E0Cu])` live `LifeState`), `Party.OnMemberConnectionChanged`, targetless `InvokeHotbar`, `/hh` commands, all 3 `UiTheme` switches, and `Dispose()`.
+8. **Package & checksums** (`ci/package.py`): validates both plugin ZIPs, builds the source ZIP, and writes `dist/SHA256SUMS.txt`.
+9. **Release** (`ci/release.py`): runs only when both `build` (Windows) and `linux` (Ubuntu) pass on the default branch with `publish == 'true'`.
 
 ## Local commands
 
-On Windows, with .NET 10 SDK, Python 3, and Dungeon Helper installed:
+On Windows, with .NET 10 SDK, Python 3, OpenSSL, Windows SDK `signtool.exe`, and Dungeon Helper 4 installed:
 
 ```powershell
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
-.\build.ps1 -Version 1.0.0
-# Nonstandard DH installation:
-.\build.ps1 -DungeonHelperDir 'D:\Apps\Dungeon Helper' -Version 1.0.0
+.\build.ps1 -Version 1.4.0 -Dh5KeyFile C:\path\to\author.key
+# Or unsigned local dev build for DH 5:
+.\build.ps1 -Version 1.4.0 -AllowUnsignedDh5
 ```
 
-`build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` in the local working copy only when the target version differs; CI runs in a clean checkout.
+`build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, `src/VoK.HealersHelper.metadata`, and `src-dh5/HealersHelper.Dh5.csproj` in the local working copy only when the target version differs; CI runs in a clean checkout.
 
 ## Verification note
 
-GitHub-hosted workflow execution (`linux`, `build`, and `release`) has been verified on `Hagaygur/DDO-Healers-Helper` across `v1.0.0`–`v1.2.0`, and the plugin has been tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all OS/GPU/display/capture configurations). Linux cross-compilation and portable C#/Python tests run in CI on Ubuntu with Wine/Proton-safe runtime fallbacks (`IsWineRuntime`), while live Linux gameplay via Wine/Proton remains untested.
+GitHub-hosted workflow execution (`linux`, `build`, and `release`) has been verified on `Hagaygur/DDO-Healers-Helper` across `v1.0.0`–`v1.3.0`, and the DH 4 plugin has been tested and confirmed working on live DDO + Dungeon Helper + Lossless Scaling on Windows 11 (not guaranteed to work on any or all OS/GPU/display/capture configurations). DH 5 Beta bundle structure, `PluginTrustGate.Evaluate`, `AuthenticodeVerifier.IsSignatureValid`, and `DungeonHelper.App` ZIP installation are verified locally via `TrustProbe` and `Dh5Smoke` against DH `5.0.858` / `VoK.Sdk 5.3.0.0`; live DDO + DH 5 Beta in-game DX10/11 rendering and live Linux gameplay via Wine/Proton remain untested until run inside the game client.
 
 References: [GitHub .NET builds](https://docs.github.com/en/actions/tutorials/build-and-test-code/net), [workflow syntax and permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), [workflow triggers](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).

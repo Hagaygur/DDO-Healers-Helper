@@ -20,6 +20,8 @@ internal static class ContractSnapshot
             compatibility["target-method." + method] = (int)method;
         foreach (var severity in Enum.GetValues<BannerSeverity>())
             compatibility["severity." + severity] = (int)severity;
+        foreach (var theme in Enum.GetValues<UiTheme>())
+            compatibility["theme." + theme] = (int)theme;
 
         var settings = new Settings();
         var state = new HealerState();
@@ -103,6 +105,21 @@ internal static class ContractSnapshot
             BiggestOverkillSaved = 310
         });
 
+        var triageState = new HealerState();
+        var triageMembers = new[]
+        {
+            new WatchedMemberSnapshot(1, "Self", 200, 200, 0, true, false),
+            new WatchedMemberSnapshot(2, "Caster", -15, 200, 1, true, true, IsTrulyDead: true),
+            new WatchedMemberSnapshot(3, "Rogue", 70, 200, 2, true, false, TempHitPoints: 250),
+            new WatchedMemberSnapshot(4, "Tank", -5, 200, 3, true, true, IsTrulyDead: false)
+        };
+        var incapWins = triageState.Evaluate(triageMembers, settings, 30.0);
+        var lowWinsOverDead = triageState.Evaluate(new[] { triageMembers[0], triageMembers[1], triageMembers[2] }, settings, 31.0);
+        var soulstoneOnly = triageState.Evaluate(new[] { triageMembers[0], triageMembers[1] }, settings, 32.0);
+        var soulstoneFrame = BannerPresentation.Compute(soulstoneOnly, settings, demo: false, editing: false, 0.0, 0.0);
+        var mutedLow = new HealerState().Evaluate(new[] { triageMembers[0], triageMembers[2] }, settings, 33.0, isMuted: m => m.Id == 3);
+        var raidKeymap = TargetPolicy.EvaluateRaidKeymapReadiness(a => a is "TARGET_FELLOW_7_KEY" or "TARGET_FELLOW_8_KEY");
+
         var features = new SortedDictionary<string, object>
         {
             ["banner.primary-low"] = low.PrimaryText,
@@ -117,9 +134,19 @@ internal static class ContractSnapshot
             ["banner.edit-hit-corners-and-move"] = BannerPresentation.ClassifyEditHit(500, 130, 4, 4) == BannerEditDragMode.ResizeTopLeft
                 && BannerPresentation.ClassifyEditHit(500, 130, 250, 65) == BannerEditDragMode.Move,
             ["banner.flash-enabled-default"] = settings.FlashBanner,
+            ["banner.hp-bar-default"] = settings.ShowBannerHpBar,
             ["banner.flash-interval-default-ms"] = settings.FlashIntervalMs,
             ["banner.flash-alternates"] = flashOn.FlashOn && !flashOff.FlashOn,
             ["banner.capture-exclude-default"] = settings.ExcludeFromCapture,
+            ["triage.incap-outranks-low-and-soulstone"] = incapWins.AlertPlayerId == 4 && !incapWins.IsSoulstone,
+            ["triage.low-hp-outranks-soulstone"] = lowWinsOverDead.AlertPlayerId == 3 && !lowWinsOverDead.IsSoulstone,
+            ["triage.soulstone-banner-calm-spectral"] = soulstoneOnly.IsSoulstone && soulstoneFrame.IsSoulstone && !soulstoneFrame.FlashOn && soulstoneFrame.BorderColorArgb == BannerPresentation.SoulstoneBorderArgb,
+            ["triage.temp-hp-badge-and-threshold"] = lowWinsOverDead.AlertTempHitPoints == 250 && lowWinsOverDead.SecondaryText.Contains("+250 THP", StringComparison.Ordinal),
+            ["triage.session-mute-suppresses-alert"] = mutedLow.Severity == BannerSeverity.None,
+            ["triage.raid-keymap-readiness-slots-7-12"] = raidKeymap.BoundCount == 2 && raidKeymap.TotalCount == 6,
+            ["theme.default"] = settings.Theme.ToString(),
+            ["theme.palette-count"] = UiThemePalette.All.Length,
+            ["dh5.quick-cast-disabled-default"] = settings.QuickHealHotbar == 0 && settings.QuickRaiseHotbar == 0,
             ["healer.plugin-enabled-default"] = settings.PluginEnabled,
             ["healer.include-self-default"] = settings.IncludeSelfInPartyMode,
             ["healer.suppress-in-town-default"] = settings.SuppressAlertsInTown,

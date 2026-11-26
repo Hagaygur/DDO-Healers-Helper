@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from package import SOURCE_DIRECTORIES, SOURCE_ROOT_FILES, is_forbidden_source_path
 from version import bump, classify, code_changed, commit_level
 
 
@@ -172,6 +173,7 @@ class CodeReleaseTests(unittest.TestCase):
             '.github/workflows/build.yml',
             'src/HealersHelper.csproj',
             'src/VoK.HealersHelper.metadata',
+            'src-dh5/HealersHelper.Dh5.csproj',
         ):
             self.write(path, 'changed')
         self.commit('feat!: non-plugin changes')
@@ -187,6 +189,11 @@ class CodeReleaseTests(unittest.TestCase):
     def test_new_nested_source_releases(self):
         self.write('src/Nested/New.cs', 'class New {}')
         self.commit('feat: new code')
+        self.assertTrue(code_changed('v1.0.0'))
+
+    def test_dh5_source_changes_trigger_release(self):
+        self.write('src-dh5/Dh5Plugin.cs', 'class Dh5Plugin {}')
+        self.commit('feat: dh5 plugin')
         self.assertTrue(code_changed('v1.0.0'))
 
     def test_deleted_source_releases(self):
@@ -234,15 +241,46 @@ class CodeReleaseTests(unittest.TestCase):
             subprocess.check_output(['git', 'ls-files'], cwd=repo_root, text=True).splitlines()
         )
         packaged = set()
-        for directory in ('src', 'tests', 'ci', '.github', '.vscode', 'docs'):
+        for directory in SOURCE_DIRECTORIES:
             for path in (repo_root / directory).rglob('*'):
                 rel = path.relative_to(repo_root)
-                if path.is_file() and not set(rel.parts) & {'bin', 'obj', '__pycache__'} and path.suffix not in {'.pyc', '.user'}:
+                if path.is_file() and not is_forbidden_source_path(rel):
                     packaged.add(rel.as_posix())
-        for name in ('README.md', 'INSTALL.txt', 'GITHUB.md', 'AGENTS.md', 'LICENSE.txt', 'build.ps1', '.gitignore', 'HealersHelper.sln', 'global.json', '.vsconfig', '.editorconfig', '.gitattributes'):
+        for name in SOURCE_ROOT_FILES:
             if (repo_root / name).is_file():
                 packaged.add(name)
         self.assertTrue(tracked.issubset(packaged), f'Tracked files missing from package.py allowlist: {sorted(tracked - packaged)}')
+
+    def test_no_private_keys_or_pfx_tracked_or_packaged(self):
+        repo_root = Path(__file__).resolve().parent.parent
+        if not (repo_root / '.git').exists():
+            return
+        tracked = subprocess.check_output(['git', 'ls-files'], cwd=repo_root, text=True).splitlines()
+        for rel_str in tracked:
+            rel = Path(rel_str)
+            self.assertNotIn(rel.suffix.lower(), {'.key', '.pfx'}, f'Secret file tracked in git: {rel_str}')
+            self.assertFalse(rel.name.lower().startswith('signing.'), f'Signing secret tracked in git: {rel_str}')
+        for directory in SOURCE_DIRECTORIES:
+            for path in (repo_root / directory).rglob('*'):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(repo_root)
+                if is_forbidden_source_path(rel):
+                    continue
+                self.assertNotIn(rel.suffix.lower(), {'.key', '.pfx'}, f'Secret file would be packaged: {rel}')
+                if path.suffix.lower() in {'.pem', '.txt', '.json', '.md', '.py', '.cs'}:
+                    raw = path.read_bytes()
+                    pem_markers = (
+                        b'-----BEGIN ' + b'PRIVATE KEY-----',
+                        b'-----BEGIN RSA ' + b'PRIVATE KEY-----',
+                        b'-----BEGIN ENCRYPTED ' + b'PRIVATE KEY-----',
+                    )
+                    for marker in pem_markers:
+                        self.assertNotIn(marker, raw, f'Private PEM marker found in {rel}')
+
+        # Also assert package.py explicitly filters .key / .pfx / signing.* even if present locally.
+        for bad in (Path('ci/author.key'), Path('ci/author.pfx'), Path('src-dh5/signing.pfx'), Path('.sdk-cache/dh5/VoK.Sdk.dll')):
+            self.assertTrue(is_forbidden_source_path(bad), f'is_forbidden_source_path must reject {bad}')
 
     def test_readme_documents_all_settings_hotkeys_and_gamification(self):
         repo_root = Path(__file__).resolve().parent.parent

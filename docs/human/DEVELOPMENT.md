@@ -1,52 +1,37 @@
 # IDE and local development
 
-Open **HealersHelper.sln** in Visual Studio with the .NET desktop development workload and a .NET 10 SDK. It contains the plugin (`src\HealersHelper.csproj`), portable executable checks (`tests\HealersHelper.Tests.csproj`), and the Windows smoke harness (`tests\WindowsSmoke\WindowsSmoke.csproj`), with Debug and Release configurations. The plugin is a class library hosted by DH, so it cannot be launched directly as a standalone program.
+Open **HealersHelper.sln** in Visual Studio with the .NET desktop development workload and a .NET 10 SDK. It contains five projects:
+- `src\HealersHelper.csproj` (`Any CPU`, `net8.0-windows`, DH 4 `4.2.1.0`)
+- `src-dh5\HealersHelper.Dh5.csproj` (`x64`, `net10.0`, DH 5 Beta `5.3.0.0`)
+- `tests\HealersHelper.Tests.csproj` (`Any CPU`, `net8.0`, portable behavioral assertions & contract snapshot)
+- `tests\WindowsSmoke\WindowsSmoke.csproj` (`Any CPU`, `net8.0-windows`, DH 4 UI & DIB smoke suite)
+- `tests\Dh5Smoke\Dh5Smoke.csproj` (`x64`, `net10.0`, cross-platform DH 5 ZIP, trust-gate, PE-token & async smoke suite)
 
-`global.json` selects stable .NET 10 SDKs (`10.0.100`, `latestFeature`). Install the .NET 8 Desktop Runtime for local Windows smoke tests and the .NET 8 runtime for portable tests (installing .NET 8 SDK alongside .NET 10 SDK supplies both). DH bundles its own .NET 8 runtime. `.vsconfig` lists the Visual Studio workload, `.editorconfig` defines formatting, `.gitattributes` normalizes line endings, and `.gitignore` excludes `bin/`, `obj/`, `dist/`, `.build/`, `.vs/`, and `*.user`.
+`global.json` selects stable .NET 10 SDKs (`10.0.100`, `latestFeature`). Install the .NET 8 Desktop Runtime alongside the .NET 10 SDK to run local DH 4 tests and `WindowsSmoke`.
 
-## SDK reference
+## Dual SDK resolution
 
-The plugin resolves `VoK.Sdk.dll` (`4.2.1.0`) from `%APPDATA%\Dungeon Helper` by default. For a different location, set `DungeonHelperDir` or pass `-p:DungeonHelperDir=...`:
+- **DH 4 (`VoK.Sdk.dll` `4.2.1.0`):** Defaults to `%APPDATA%\Dungeon Helper` (or pass `-p:DungeonHelperDir=...`).
+- **DH 5 (`VoK.Sdk.dll` `5.3.0.0`):** Uses `DH5_SDK_DIR`, `-p:DungeonHelper5Dir=...`, or `.sdk-cache\dh5`. Run `./ci/Get-Sdk.ps1` (Windows) or `python3 ci/get_sdk_linux.py` (Linux) to populate SHA-256 verified SDKs without committing binaries.
 
-```powershell
-$env:DungeonHelperDir = 'D:\Apps\Dungeon Helper'
-dotnet build HealersHelper.sln -c Debug
-# Or explicitly:
-dotnet build HealersHelper.sln -c Debug '-p:DungeonHelperDir=D:\Apps\Dungeon Helper'
-```
+## Build outputs and signing
 
-Do not copy `VoK.Sdk.dll` into source control.
-
-## Visual Studio & VS Code
-
-- Set **HealersHelper.Tests** as startup project to run or debug portable behavioral checks (console assertions returning exit code 0/1).
-- Run **WindowsSmoke** with arguments `<path-to-plugin-zip-or-dll> <DungeonHelperDir>` to verify ZIP assembly loading, `IDdoPlugin` contract, synthetic 720px toolbar / minimum-size dialog layout (zero clipping), and native banner rendering.
-- `.vscode/tasks.json` and `.vscode/launch.json` provide **Build solution (Debug)**, **Test DDO Healer's Helper and emit contracts**, **Test version policy**, **Package plugin (Windows)** (`pwsh`), and **Attach to Dungeon Helper (.NET)**.
-- For live DH debugging, close DDO and DH, build Debug, copy the three runtime files plus matching `.pdb` into `%APPDATA%\Dungeon Helper\plugins\HealersHelper\`, start DH/DDO, and attach the managed debugger. Never ship PDBs in release installer ZIPs.
-
-## Build outputs
-
-`ci/PackagePlugin.targets` runs automatically on every plugin build:
-
-| Configuration | Plugin output directory | Contents |
-| --- | --- | --- |
-| Release | `src/bin/Release/net8.0-windows/` | `HealersHelper-<Version>-plugin.zip` only |
-| Debug | `src/bin/Debug/net8.0-windows/` | Installer ZIP, `VoK.HealersHelper.dll`, `.deps.json`, `.metadata`, and `.pdb` |
-
-The installer ZIP always contains strictly three runtime entries under `plugins/HealersHelper/`, DLL first. `build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, and `src/VoK.HealersHelper.metadata` when the requested version differs, builds Release, validates the 3-entry ZIP, runs `HealersHelper.Tests`, and copies the ZIP into `dist/`.
+- **DH 4 (`ci/PackagePlugin.targets`):** Release leaves only `HealersHelper-<Version>-dh4-plugin.zip` in `src/bin/Release/net8.0-windows/`; Debug retains loose files + `.pdb` + ZIP.
+- **DH 5 (`ci/sign_dh5.py`):** Builds to `src-dh5/bin/x64/{Debug,Release}/net10.0/`, then signs `VoK.HealersHelper.dll` (ephemeral Windows `signtool.exe` or Linux `osslsigncode`), generates `Healers Helper.pem`, `plugin.metadata`, `.manifest`, and `.manifest.sig`, and writes `dist/HealersHelper-<Version>-dh5-plugin.zip`. Never place `*.key` or `*.pfx` inside the repo or release archives.
 
 ## Linux cross-compilation
 
-Install .NET SDK 10, .NET 8 runtime, Python 3, Git, and `msitools` (`sudo apt-get install msitools` on Ubuntu). From the repository root:
+Install .NET SDK 10, .NET 8 runtime, Python 3, Git, `msitools`, and `osslsigncode` (`sudo apt-get install msitools osslsigncode` on Ubuntu). From the repository root:
 
 ```bash
-python3 ci/get_sdk_linux.py --destination .build/dh-sdk
-dotnet build HealersHelper.sln -c Release "-p:DungeonHelperDir=$PWD/.build/dh-sdk"
-python3 ci/check_build_output.py src/bin/Release/net8.0-windows Release
+python3 ci/get_sdk_linux.py --destination .sdk-cache
+dotnet build HealersHelper.sln -c Release "-p:DungeonHelperDir=$PWD/.sdk-cache/dh4" "-p:DungeonHelper5Dir=$PWD/.sdk-cache/dh5"
+python3 ci/check_build_output.py src/bin/Release/net8.0-windows Release --target dh4
+python3 ci/check_build_output.py src-dh5/bin/x64/Release/net10.0 Release --target dh5
+python3 ci/sign_dh5.py --dll src-dh5/bin/x64/Release/net10.0/VoK.HealersHelper.dll --version 1.4.0 --output dist/HealersHelper-1.4.0-dh5-plugin.zip --allow-unsigned
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 --no-build -- dist/HealersHelper-1.4.0-dh5-plugin.zip "$PWD/.sdk-cache/dh5"
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release --no-build
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 ```
-
-Cross-compilation produces a Windows plugin (`EnableWindowsTargeting=true`); running the plugin or `WindowsSmoke` requires Windows.
 
 Agent counterpart: [Development instructions](../agents/DEVELOPMENT.md).
