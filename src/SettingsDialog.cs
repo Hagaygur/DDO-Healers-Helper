@@ -13,6 +13,7 @@ internal sealed class SettingsDialog : Form
     private readonly IHealerEngineView _engine;
     private readonly Settings _settings;
     private readonly Font _dialogFont = new("Segoe UI", 9);
+    private readonly ToolTip _toolTip = new() { AutoPopDelay = 10000, InitialDelay = 400, ReshowDelay = 200 };
     private readonly List<HotkeyEntry> _hotkeyEntries = new(7);
 
     private static readonly Color SlateBg = Color.FromArgb(17, 19, 24);
@@ -31,6 +32,7 @@ internal sealed class SettingsDialog : Form
     private readonly NumericUpDown _hysteresis = new() { Name = "RecoveryHysteresisNumeric", Minimum = 0, Maximum = 20, Width = 60 };
     private readonly NumericUpDown _deadSeconds = new() { Name = "DeadAlertSecondsNumeric", Minimum = 0, Maximum = 60, Width = 60 };
     private readonly NumericUpDown _maxAlertSeconds = new() { Name = "MaxAlertSecondsNumeric", Minimum = 0, Maximum = 120, Width = 65 };
+    private readonly NumericUpDown _fallbackDeathHp = new() { Name = "FallbackDeathHpNumeric", Minimum = -5000, Maximum = 0, Increment = 25, Width = 75 };
     private readonly CheckBox _suppressInTown = new() { Name = "SuppressInTownCheckBox", Text = "Suppress alerts in town", AutoSize = true };
 
     // Group 2: Clutch Saves & Gamification
@@ -168,7 +170,7 @@ internal sealed class SettingsDialog : Form
 
         // Section 1: HP Alert & Tracking
         var trackingGroup = CreateGroup("HP Alert & Tracking");
-        var trackingTable = CreateStackTable(3);
+        var trackingTable = CreateStackTable(4);
 
         _pluginEnabled.Checked = _settings.PluginEnabled;
         _includeSelf.Checked = _settings.IncludeSelfInPartyMode;
@@ -184,6 +186,10 @@ internal sealed class SettingsDialog : Form
         _hysteresis.Value = Math.Clamp(_settings.RecoveryHysteresisPercent, 0, 20);
         _deadSeconds.Value = Math.Clamp(_settings.DeadAlertSeconds, 0, 60);
         _maxAlertSeconds.Value = Math.Clamp(_settings.MaxAlertSeconds, 0, 120);
+        _fallbackDeathHp.Value = Math.Clamp(_settings.FallbackDeathHp, LifeStatusEvaluator.MinFallbackDeathHp, LifeStatusEvaluator.MaxFallbackDeathHp);
+        _toolTip.SetToolTip(
+            _fallbackDeathHp,
+            "Out-of-range death HP cutoff when live DDO LifeState and HitPoints_IncapacitatedBonus are unavailable. Live LifeState always overrides this in entity range. Set to 0 to disable.");
 
         var trackingRow0 = CreateFlow();
         trackingRow0.Controls.AddRange(new Control[] { _pluginEnabled, MakeFieldLabel("Mode"), _mode, _includeSelf });
@@ -200,6 +206,12 @@ internal sealed class SettingsDialog : Form
         trackingRow2.Controls.AddRange(new Control[]
         {
             MakeFieldLabel("Max alert (s, 0=inf)"), _maxAlertSeconds,
+            MakeFieldLabel("Fallback death HP (0=off)"), _fallbackDeathHp
+        });
+
+        var trackingRow3 = CreateFlow();
+        trackingRow3.Controls.AddRange(new Control[]
+        {
             _suppressInTown,
             _includeTempHp
         });
@@ -207,6 +219,7 @@ internal sealed class SettingsDialog : Form
         trackingTable.Controls.Add(trackingRow0, 0, 0);
         trackingTable.Controls.Add(trackingRow1, 0, 1);
         trackingTable.Controls.Add(trackingRow2, 0, 2);
+        trackingTable.Controls.Add(trackingRow3, 0, 3);
         trackingGroup.Controls.Add(trackingTable);
         root.Controls.Add(trackingGroup, 0, 0);
 
@@ -726,6 +739,7 @@ internal sealed class SettingsDialog : Form
             _settings.HpThresholdPercent = (int)_threshold.Value;
             _settings.RecoveryHysteresisPercent = (int)_hysteresis.Value;
             _settings.DeadAlertSeconds = (int)_deadSeconds.Value;
+            _settings.FallbackDeathHp = (int)_fallbackDeathHp.Value;
             _settings.MaxAlertSeconds = (int)_maxAlertSeconds.Value;
 
             _settings.SaveWindowSeconds = (double)_saveWindowSeconds.Value;
@@ -873,6 +887,10 @@ internal sealed class SettingsDialog : Form
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing)
+        {
+            _toolTip.Dispose();
+        }
         base.Dispose(disposing);
         if (disposing)
         {

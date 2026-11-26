@@ -116,6 +116,75 @@ internal sealed record WatchedMemberSnapshot(
     }
 }
 
+// Pure deterministic life/death status evaluation shared by DH 4, DH 5, and unit tests.
+// In DDO, unconscious range scales well past -10 HP via Diehard, feats, enhancements,
+// Epic Past Lives, and gear. Authoritative live LifeState (Incapacitated vs Dead) always
+// takes precedence when in entity range; out-of-bubble fallback uses sticky confirmed-dead
+// tracking, cached HitPoints_IncapacitatedBonus (-10 - bonus), or configurable FallbackDeathHp.
+internal static class LifeStatusEvaluator
+{
+    public const int LifeStateUndef = 0;
+    public const int LifeStateDead = 2;
+    public const int LifeStateIncapacitated = 3;
+    public const int LifeStateAlive = 4;
+
+    public const uint DeathLifeStatePropertyId = 0x10000E0Cu;
+    public const uint DeathSoulStoneIdPropertyId = 0x10001868u;
+    public const uint HitPointsIncapacitatedBonusPropertyId = 0x10008250u;
+
+    public const int DefaultFallbackDeathHp = -200;
+    public const int MinFallbackDeathHp = -5000;
+    public const int MaxFallbackDeathHp = 0;
+
+    public static (bool IsDown, bool IsTrulyDead) EvaluateMemberLifeStatus(
+        bool connected,
+        int hp,
+        int maxHp,
+        bool hasLiveEntity,
+        int? entityLifeStateRaw,
+        bool hasSoulstoneProperty,
+        bool wasConfirmedDead,
+        int? cachedIncapBonus,
+        int fallbackDeathHp)
+    {
+        if (!connected)
+            return (false, false);
+
+        if (hasLiveEntity && entityLifeStateRaw is int rawLifeState)
+        {
+            switch (rawLifeState)
+            {
+                case LifeStateDead:
+                    return (true, true);
+                case LifeStateIncapacitated:
+                    return (true, false);
+                case LifeStateAlive:
+                    return (maxHp > 0 && hp <= 0, false);
+            }
+        }
+
+        if (hasLiveEntity && hasSoulstoneProperty && (maxHp <= 0 || hp <= 0))
+            return (true, true);
+
+        if (maxHp <= 0 || hp > 0)
+            return (false, false);
+
+        if (wasConfirmedDead)
+            return (true, true);
+
+        if (cachedIncapBonus is >= 0)
+        {
+            long deathCutoff = -10L - cachedIncapBonus.Value;
+            return (true, hp <= deathCutoff);
+        }
+
+        if (fallbackDeathHp < 0)
+            return (true, hp <= fallbackDeathHp);
+
+        return (true, false);
+    }
+}
+
 internal sealed record AlertBannerView(
     BannerSeverity Severity,
     TrackingMode Mode,

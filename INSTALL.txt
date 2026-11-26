@@ -1,4 +1,4 @@
-DDO HEALER'S HELPER 1.4.0
+DDO HEALER'S HELPER 1.5.0
 
 CHOOSE THE ARCHIVE MATCHING YOUR DUNGEON HELPER VERSION.
 HealersHelper-X.Y.Z-source.zip is separate; do NOT import it into Dungeon Helper.
@@ -25,7 +25,8 @@ USE
   status HUD render as independent click-through layered windows with
   WDA_EXCLUDEFROMCAPTURE (0x11) and Wine/Proton guards (IsWineRuntime).
   Test Preview Banner with Lossless Scaling (WGC and DXGI) with the panel closed.
-- DH 5 Beta: Click the toolbar icon (or configure via /hh commands in DDO chat).
+- DH 5 Beta: Click the toolbar icon (or configure via /hh commands in DDO chat,
+  incl. /hh deathhp <value|off> for out-of-range death HP fallback).
   HUDs draw natively inside DDO's DX10/11 frame via ImGuiNET with zero external
   overlay HWND. Configure optional Quick-Heal / Quick-Raise hotbar slots (0 = Disabled)
   for targetless InvokeHotbar casting without dropping your Boss/Tank target.

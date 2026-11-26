@@ -269,6 +269,7 @@ internal static class Program
                 var includeTempHpBox = (CheckBox)dialog.Controls.Find("IncludeTempHpCheckBox", true).Single();
                 var suppressTownBox = (CheckBox)dialog.Controls.Find("SuppressInTownCheckBox", true).Single();
                 var maxAlertNumeric = (NumericUpDown)dialog.Controls.Find("MaxAlertSecondsNumeric", true).Single();
+                var fallbackDeathHpNumeric = (NumericUpDown)dialog.Controls.Find("FallbackDeathHpNumeric", true).Single();
                 var saveWinNumeric = (NumericUpDown)dialog.Controls.Find("SaveWindowSecondsNumeric", true).Single();
                 var castWinNumeric = (NumericUpDown)dialog.Controls.Find("SelfCastWindowSecondsNumeric", true).Single();
                 var minHealNumeric = (NumericUpDown)dialog.Controls.Find("MinHealDeltaNumeric", true).Single();
@@ -301,6 +302,8 @@ internal static class Program
 
                 if (!hudEnabledBox.Visible || bannerOpacityNumeric.Minimum != 20m)
                     throw new Exception("Expected visible HudEnabledCheckBox and BannerOpacityNumeric Minimum=20");
+                if (!fallbackDeathHpNumeric.Visible || fallbackDeathHpNumeric.Minimum != -5000m || fallbackDeathHpNumeric.Maximum != 0m || fallbackDeathHpNumeric.Value != -200m)
+                    throw new Exception($"Expected visible FallbackDeathHpNumeric [-5000..0] default -200, got Visible={fallbackDeathHpNumeric.Visible}, Min={fallbackDeathHpNumeric.Minimum}, Max={fallbackDeathHpNumeric.Maximum}, Val={fallbackDeathHpNumeric.Value}");
                 if (!restorePrevBox.Visible || !restoreDelayNumeric.Visible || !restorePrevBox.Checked || restoreDelayNumeric.Value != 0.2m)
                     throw new Exception("Expected visible RestorePreviousTargetCheckBox (true) and RestoreTargetDelayNumeric (0.2s) defaults");
                 if (toggleHotkeyBox.Text != "Ctrl+Shift+K" || copyCardHotkeyBox.Text != "None" || toggleBannerHotkeyBox.Text != "None")
@@ -369,6 +372,7 @@ internal static class Program
                 includeTempHpBox.Checked = true;
                 suppressTownBox.Checked = true;
                 maxAlertNumeric.Value = 15;
+                fallbackDeathHpNumeric.Value = -350;
                 saveWinNumeric.Value = 7.5m;
                 castWinNumeric.Value = 4.5m;
                 minHealNumeric.Value = 12;
@@ -428,6 +432,7 @@ internal static class Program
                     || root.GetProperty("Theme").GetString() != "CannithArcane"
                     || root.GetProperty("SuppressAlertsInTown").GetBoolean() != true
                     || root.GetProperty("MaxAlertSeconds").GetInt32() != 15
+                    || root.GetProperty("FallbackDeathHp").GetInt32() != -350
                     || Math.Abs(root.GetProperty("SaveWindowSeconds").GetDouble() - 7.5) > 0.001
                     || Math.Abs(root.GetProperty("SelfCastWindowSeconds").GetDouble() - 4.5) > 0.001
                     || root.GetProperty("MinHealDelta").GetInt32() != 12

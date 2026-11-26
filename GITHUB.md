@@ -49,8 +49,8 @@ Conventional commits touching `src/**/*.cs` or `src-dh5/**/*.cs` can raise (neve
 5. **Debug & Release builds + output validation** (`ci/check_build_output.py`): validates DH 4 (`src/bin/{Debug,Release}/net8.0-windows`) and DH 5 (`src-dh5/bin/x64/{Debug,Release}/net10.0`) build outputs on both Windows and Linux (plus repeat Release build on Linux).
 6. **Ephemeral DH 5 Authenticode + Manifest signing** (`ci/sign_dh5.py`): decodes `DH_AUTHOR_KEY_B64` into an ephemeral temp directory (cleaned up in `finally:`), verifies SPKI fingerprint match against `ci/Healers Helper.entitlement`, Authenticode-signs `VoK.HealersHelper.dll` via Windows `signtool.exe` (ephemeral legacy-compatible PFX) or Linux `osslsigncode`, writes `Healers Helper.pem`, `plugin.metadata`, `.manifest`, and `.manifest.sig`, and produces `HealersHelper-<version>-dh5-plugin.zip`.
 7. **Dual smoke harnesses**:
-   - **Windows DH 4 smoke (`tests/WindowsSmoke/WindowsSmoke.csproj`)**: loads `VoK.HealersHelper.dll` from `*-dh4-plugin.zip`, exercises `HealersHelperUi` (`380px` and `720px`), `SettingsDialog` (3 `UiTheme` combos, `IncludeTempHpCheckBox`, `ShowBannerHpBarCheckBox`, `RaidKeymapReadinessLabel`, 6 color pickers, 7 hotkeys, dirty-tracking), and native `BannerHudWindow` + `StatusHudWindow` rendering and `WS_EX_*` styles.
-   - **Cross-platform DH 5 smoke (`tests/Dh5Smoke/Dh5Smoke.csproj`, Windows + Linux)**: inspects `*-dh5-plugin.zip` (`--require-signed` verifying DH 5 `IssuerKeys`, SPKI fingerprint, `.manifest(.sig)` bidirectional SHA-256, and Windows `WinVerifyTrust`), verifies 0 WinForms/`System.Media` refs and 0 unresolved PE tokens in an isolated `AssemblyLoadContext` against `VoK.Sdk 5.3.0.0`, and exercises async `TickAsync` (`UpdateProperties([0x10000E0Cu])` live `LifeState`), `Party.OnMemberConnectionChanged`, targetless `InvokeHotbar`, `/hh` commands, all 3 `UiTheme` switches, and `Dispose()`.
+   - **Windows DH 4 smoke (`tests/WindowsSmoke/WindowsSmoke.csproj`)**: loads `VoK.HealersHelper.dll` from `*-dh4-plugin.zip`, exercises `HealersHelperUi` (`380px` and `720px`), `SettingsDialog` (3 `UiTheme` combos, `FallbackDeathHpNumeric`, `IncludeTempHpCheckBox`, `ShowBannerHpBarCheckBox`, `RaidKeymapReadinessLabel`, 6 color pickers, 8 hotkeys, dirty-tracking), and native `BannerHudWindow` + `StatusHudWindow` rendering and `WS_EX_*` styles.
+   - **Cross-platform DH 5 smoke (`tests/Dh5Smoke/Dh5Smoke.csproj`, Windows + Linux)**: inspects `*-dh5-plugin.zip` (`--require-signed` verifying DH 5 `IssuerKeys`, SPKI fingerprint, `.manifest(.sig)` bidirectional SHA-256, and Windows `WinVerifyTrust`), verifies 0 WinForms/`System.Media` refs and 0 unresolved PE tokens in an isolated `AssemblyLoadContext` against `VoK.Sdk 5.3.0.0`, and exercises async `TickAsync` (`UpdateProperties([0x10000E0Cu, 0x10001868u, 0x10008250u])` live `LifeState`, Soulstone, and `HitPoints_IncapacitatedBonus`), `Party.OnMemberConnectionChanged`, targetless `InvokeHotbar`, `/hh` commands (incl. `/hh deathhp`), all 3 `UiTheme` switches, and `Dispose()`.
 8. **Package & checksums** (`ci/package.py`): validates both plugin ZIPs, builds the source ZIP, and writes `dist/SHA256SUMS.txt`.
 9. **Release** (`ci/release.py`): runs only when both `build` (Windows) and `linux` (Ubuntu) pass on the default branch with `publish == 'true'`.
 
@@ -61,9 +61,9 @@ On Windows, with .NET 10 SDK, Python 3, OpenSSL, Windows SDK `signtool.exe`, and
 ```powershell
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
-.\build.ps1 -Version 1.4.0 -Dh5KeyFile C:\path\to\author.key
+.\build.ps1 -Version 1.5.0 -Dh5KeyFile C:\path\to\author.key
 # Or unsigned local dev build for DH 5:
-.\build.ps1 -Version 1.4.0 -AllowUnsignedDh5
+.\build.ps1 -Version 1.5.0 -AllowUnsignedDh5
 ```
 
 `build.ps1` stamps `src/HealersHelper.csproj`, `src/AssemblyInfo.cs`, `src/VoK.HealersHelper.metadata`, and `src-dh5/HealersHelper.Dh5.csproj` in the local working copy only when the target version differs; CI runs in a clean checkout.

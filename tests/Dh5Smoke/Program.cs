@@ -22,6 +22,8 @@ internal static class Program
     private const string ExpectedAuthor = "Warned";
     private const string ExpectedAssemblyName = "VoK.HealersHelper";
     private const uint LifeStatePropertyId = 0x10000E0Cu;
+    private const uint SoulStonePropertyId = 0x10001868u;
+    private const uint IncapacitatedBonusPropertyId = 0x10008250u;
 
     // Official DH 5 Issuer public keys (DungeonHelper.Common.Trust.IssuerKeys.All) for standalone verification.
     private static readonly string[] Dh5IssuerPublicKeyPems =
@@ -509,28 +511,56 @@ internal static class Program
             if (!mock.ChatCommandHandlers.TryGetValue("hh", out var hhHandler))
                 throw new Exception("Dh5HealerEngine did not register 'hh' on eventProvider.OnChatCommand");
 
-            // Scenario A: Self healthy, Tank Incapacitated (-4 HP, LifeState=Incapacitated), Wizard Dead Soulstone (-15 HP, LifeState=Dead)
+            // Scenario A: Self healthy, Tank Incapacitated at -320 HP (well below default FallbackDeathHp=-200, LifeState=Incapacitated, IncapBonus=300),
+            //             Wizard Dead Soulstone (-45 HP, LifeState=Dead)
+            mock.Tank.HitPoints = -320;
+            mock.Tank.IncapacitatedBonus = 300;
+            mock.Wizard.HitPoints = -45;
             await (Task)tickOnce.Invoke(engine, null)!;
-            if (mock.LifeStateHydrationCount < 3)
-                throw new Exception($"Expected >= 3 UpdateProperties([0x10000E0C]) hydration calls, observed {mock.LifeStateHydrationCount}");
+            if (mock.LifeStateHydrationCount < 3 || mock.SoulStoneHydrationCount < 3 || mock.IncapBonusHydrationCount < 3)
+                throw new Exception($"Expected >= 3 UpdateProperties([0x10000E0C, 0x10001868, 0x10008250]) hydration calls, observed life={mock.LifeStateHydrationCount}, soul={mock.SoulStoneHydrationCount}, incap={mock.IncapBonusHydrationCount}");
 
             object view1 = viewMethod.Invoke(engine, null)!;
             string primary1 = (string)view1.GetType().GetProperty("PrimaryText")!.GetValue(view1)!;
             bool isSoul1 = (bool)view1.GetType().GetProperty("IsSoulstone")!.GetValue(view1)!;
             if (primary1 != "DOWN: Tank" || isSoul1)
-                throw new Exception($"Expected Incapacitated Tank prioritized over Dead Soulstone, got '{primary1}' (IsSoulstone={isSoul1})");
+                throw new Exception($"Expected live Incapacitated Tank at -320 HP prioritized over Dead Soulstone, got '{primary1}' (IsSoulstone={isSoul1})");
 
-            // Heal Tank -> Wizard Dead Soulstone should now surface with IsSoulstone=true!
+            // Scenario A2: Out-of-bubble cached HitPoints_IncapacitatedBonus (300 -> cutoff -310) & sticky confirmed-dead Wizard.
+            mock.Tank.InEntityBubble = false;
+            mock.Tank.HitPoints = -280; // > -310 -> still healable Incapacitated out of bubble!
+            await (Task)tickOnce.Invoke(engine, null)!;
+            object viewOutBubbleHealable = viewMethod.Invoke(engine, null)!;
+            if ((string)viewOutBubbleHealable.GetType().GetProperty("PrimaryText")!.GetValue(viewOutBubbleHealable)! != "DOWN: Tank"
+                || (bool)viewOutBubbleHealable.GetType().GetProperty("IsSoulstone")!.GetValue(viewOutBubbleHealable)!)
+            {
+                throw new Exception("Out-of-bubble Tank at -280 HP with cached IncapBonus=300 (-310 cutoff) must remain healable Incapacitated");
+            }
+
+            mock.Tank.HitPoints = -315; // <= -310 -> transitions to Dead Soulstone out of bubble!
+            await (Task)tickOnce.Invoke(engine, null)!;
+            object viewOutBubbleDead = viewMethod.Invoke(engine, null)!;
+            if ((string)viewOutBubbleDead.GetType().GetProperty("PrimaryText")!.GetValue(viewOutBubbleDead)! != "DEAD — RAISE Tank"
+                || !(bool)viewOutBubbleDead.GetType().GetProperty("IsSoulstone")!.GetValue(viewOutBubbleDead)!)
+            {
+                throw new Exception("Out-of-bubble Tank at -315 HP with cached IncapBonus=300 (-310 cutoff) must transition to Dead Soulstone");
+            }
+
+            // Heal Tank back in bubble -> Wizard leaves entity bubble at -45 HP and stays sticky Dead Soulstone even with FallbackDeathHp=0!
+            mock.Tank.InEntityBubble = true;
             mock.Tank.HitPoints = 200;
             mock.Tank.LifeStateValue = mock.LifeStateAlive;
+            mock.Wizard.InEntityBubble = false;
+            await mock.InvokeChatCommandAsync("hh", "deathhp off");
             await (Task)tickOnce.Invoke(engine, null)!;
             object view2 = viewMethod.Invoke(engine, null)!;
             string primary2 = (string)view2.GetType().GetProperty("PrimaryText")!.GetValue(view2)!;
             bool isSoul2 = (bool)view2.GetType().GetProperty("IsSoulstone")!.GetValue(view2)!;
             if (primary2 != "DEAD — RAISE Wizard" || !isSoul2)
-                throw new Exception($"Expected Dead Soulstone Wizard after Tank healed, got '{primary2}' (IsSoulstone={isSoul2})");
+                throw new Exception($"Expected out-of-bubble sticky Dead Soulstone Wizard after Tank healed (with FallbackDeathHp=0), got '{primary2}' (IsSoulstone={isSoul2})");
+            mock.Wizard.InEntityBubble = true;
 
-            Console.WriteLine($"PASS Async TickAsync LifeState 0x10000E0C hydration ({mock.LifeStateHydrationCount} calls) & 3-state triage priority");
+            Console.WriteLine($"PASS Async TickAsync 3-property hydration (0x10000E0C/0x10001868/0x10008250, {mock.LifeStateHydrationCount} calls), -320 HP live Incap, cached IncapBonus, and sticky out-of-bubble Dead");
 
             // Scenario B: Party.OnMemberConnectionChanged disconnects Wizard -> alert clears!
             await mock.RaisePartyConnectionChangedAsync(mock.Wizard.Id, false);
@@ -561,28 +591,36 @@ internal static class Program
             }
             Console.WriteLine("PASS Targetless InvokeHotbar Quick-Heal (zero target loss)");
 
-            // Scenario D: /hh commands (hp, theme cannith/feywild/eberron, raid, mute, score, status) + JSON persistence
+            // Scenario D: /hh commands (hp, deathhp 350/off/-450, theme cannith/feywild/eberron, raid, mute, score, status) + JSON persistence
             await mock.InvokeChatCommandAsync("hh", "hp 65");
+            await mock.InvokeChatCommandAsync("hh", "deathhp 350");
+            if ((int)getSettingsMethod.Invoke(engine, null)!.GetType().GetProperty("FallbackDeathHp")!.GetValue(getSettingsMethod.Invoke(engine, null)!)! != -350)
+                throw new Exception("/hh deathhp 350 did not set FallbackDeathHp=-350");
+            await mock.InvokeChatCommandAsync("hh", "deathhp off");
+            if ((int)getSettingsMethod.Invoke(engine, null)!.GetType().GetProperty("FallbackDeathHp")!.GetValue(getSettingsMethod.Invoke(engine, null)!)! != 0)
+                throw new Exception("/hh deathhp off did not set FallbackDeathHp=0");
+            await mock.InvokeChatCommandAsync("hh", "deathhp -450");
             await mock.InvokeChatCommandAsync("hh", "theme cannith");
             await mock.InvokeChatCommandAsync("hh", "theme feywild");
             await mock.InvokeChatCommandAsync("hh", "raid");
             await mock.InvokeChatCommandAsync("hh", "mute Tank");
             await mock.InvokeChatCommandAsync("hh", "status");
             await mock.InvokeChatCommandAsync("hh", "score");
-            if (mock.PrintedChatLines.Count < 7)
-                throw new Exception($"Expected >= 7 Print() chat replies from /hh commands, got {mock.PrintedChatLines.Count}");
+            if (mock.PrintedChatLines.Count < 10 || !mock.PrintedChatLines.Any(l => l.Contains("DeathHP=-450", StringComparison.Ordinal)))
+                throw new Exception($"Expected >= 10 Print() chat replies including DeathHP=-450 in /hh status, got {mock.PrintedChatLines.Count}");
 
             string persistedJson = File.ReadAllText(Path.Combine(pluginFolder, "healers-helper.json"));
             using (var doc = JsonDocument.Parse(persistedJson))
             {
                 if (doc.RootElement.GetProperty("HpThresholdPercent").GetInt32() != 65
+                    || doc.RootElement.GetProperty("FallbackDeathHp").GetInt32() != -450
                     || doc.RootElement.GetProperty("Theme").GetString() != "FeywildTwilight"
                     || !doc.RootElement.GetProperty("RaidHudEnabled").GetBoolean())
                 {
                     throw new Exception("DH 5 settings persistence via /hh commands did not write expected values");
                 }
             }
-            Console.WriteLine("PASS /hh chat commands, all 3 UiTheme switches, and healers-helper.json persistence");
+            Console.WriteLine("PASS /hh chat commands (incl. /hh deathhp), all 3 UiTheme switches, and healers-helper.json persistence");
 
             // Scenario E: SetHotkeyCaptureActive(true) suppresses live hotkey dispatch + deleted entity hydration guard
             MethodInfo setCaptureMethod = engineType.GetMethod("SetHotkeyCaptureActive", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
@@ -644,7 +682,10 @@ internal static class Program
         public int SpellPoints { get; set; }
         public int MaxSpellPoints { get; set; }
         public bool IsDeleted { get; set; }
+        public bool InEntityBubble { get; set; } = true;
         public object? LifeStateValue { get; set; }
+        public long? SoulStoneId { get; set; }
+        public int? IncapacitatedBonus { get; set; }
     }
 
     private sealed class Dh5MockHarness
@@ -659,6 +700,8 @@ internal static class Program
         public MockActor Wizard { get; }
 
         public int LifeStateHydrationCount;
+        public int SoulStoneHydrationCount;
+        public int IncapBonusHydrationCount;
         public int SelectObjectCalls;
         public List<(uint Bar, uint Slot, ulong? TargetId)> InvokeHotbarCalls { get; } = new();
         public List<string> PrintedChatLines { get; } = new();
@@ -760,7 +803,10 @@ internal static class Program
                         return _partyMembersList;
                     case "GetEntityAsync":
                         ulong eid = (ulong)args![0]!;
-                        _entityProxies.TryGetValue(eid, out object? found);
+                        MockActor? actor = eid == Self.Id ? Self : eid == Tank.Id ? Tank : eid == Wizard.Id ? Wizard : null;
+                        object? found = actor is not null && actor.InEntityBubble && _entityProxies.TryGetValue(eid, out object? proxy)
+                            ? proxy
+                            : null;
                         return FromResultTyped(sdk.GetType("VoK.Sdk.IEntity")!, found);
                     case "GetSelectedObjectId":
                         return (ulong?)0x0300000000000999UL; // Hard-targeted raid boss
@@ -839,6 +885,8 @@ internal static class Program
         {
             Type propCollType = Sdk.GetType("VoK.Sdk.Properties.IPropertyCollection")!;
             Type enumPropType = Sdk.GetType("VoK.Sdk.Properties.IEnumProperty")!;
+            Type int32PropType = Sdk.GetType("VoK.Sdk.Properties.IInt32Property")!;
+            Type int64PropType = Sdk.GetType("VoK.Sdk.Properties.IInt64Property")!;
             Type iPropType = Sdk.GetType("VoK.Sdk.Properties.IProperty")!;
 
             object MakeLifeProp() => CreateProxy(enumPropType, (pm, _) => pm.Name switch
@@ -850,15 +898,46 @@ internal static class Program
                 _ => DefaultFor(pm.ReturnType)
             });
 
+            object? MakeSoulStoneProp() => actor.SoulStoneId is { } ssId
+                ? CreateProxy(int64PropType, (pm, _) => pm.Name switch
+                {
+                    "get_PropertyId" => SoulStonePropertyId,
+                    "get_Int64Value" => (long?)ssId,
+                    "get_Value" => ssId,
+                    _ => DefaultFor(pm.ReturnType)
+                })
+                : null;
+
+            object? MakeIncapBonusProp() => actor.IncapacitatedBonus is { } bonus
+                ? CreateProxy(int32PropType, (pm, _) => pm.Name switch
+                {
+                    "get_PropertyId" => IncapacitatedBonusPropertyId,
+                    "get_Int32Value" => (int?)bonus,
+                    "get_Value" => bonus,
+                    _ => DefaultFor(pm.ReturnType)
+                })
+                : null;
+
+            object? LookupProperty(uint id) => id switch
+            {
+                LifeStatePropertyId => MakeLifeProp(),
+                SoulStonePropertyId => MakeSoulStoneProp(),
+                IncapacitatedBonusPropertyId => MakeIncapBonusProp(),
+                _ => null
+            };
+
             object propColl = CreateProxy(propCollType, (cm, cargs) =>
             {
-                if (cm.Name == "GetProperty" && cargs is { Length: 1 } && (uint)cargs[0]! == LifeStatePropertyId)
-                    return MakeLifeProp();
+                if (cm.Name == "GetProperty" && cargs is { Length: 1 })
+                    return LookupProperty((uint)cargs[0]!);
                 if (cm.Name == "get_Properties")
                 {
                     var listType = typeof(List<>).MakeGenericType(iPropType);
                     var list = Activator.CreateInstance(listType)!;
-                    listType.GetMethod("Add")!.Invoke(list, new[] { MakeLifeProp() });
+                    var add = listType.GetMethod("Add")!;
+                    add.Invoke(list, new[] { MakeLifeProp() });
+                    if (MakeSoulStoneProp() is { } ss) add.Invoke(list, new[] { ss });
+                    if (MakeIncapBonusProp() is { } inc) add.Invoke(list, new[] { inc });
                     return list;
                 }
                 return DefaultFor(cm.ReturnType);
@@ -875,7 +954,7 @@ internal static class Program
                 "get_SpellPoints_Current" => (int?)actor.SpellPoints,
                 "get_SpellPoints_Max" => (int?)actor.MaxSpellPoints,
                 "get_InstanceProperties" => propColl,
-                "GetProperty" when args is { Length: 1 } && (uint)args[0]! == LifeStatePropertyId => MakeLifeProp(),
+                "GetProperty" when args is { Length: 1 } => LookupProperty((uint)args[0]!),
                 "UpdateProperties" => HandleUpdateProperties(args),
                 _ => DefaultFor(m.ReturnType)
             });
@@ -883,8 +962,13 @@ internal static class Program
 
         private Task HandleUpdateProperties(object?[]? args)
         {
-            if (args is { Length: 1 } && args[0] is IEnumerable<uint> ids && ids.Contains(LifeStatePropertyId))
-                LifeStateHydrationCount++;
+            if (args is { Length: 1 } && args[0] is IEnumerable<uint> ids)
+            {
+                var set = ids.ToHashSet();
+                if (set.Contains(LifeStatePropertyId)) LifeStateHydrationCount++;
+                if (set.Contains(SoulStonePropertyId)) SoulStoneHydrationCount++;
+                if (set.Contains(IncapacitatedBonusPropertyId)) IncapBonusHydrationCount++;
+            }
             return Task.CompletedTask;
         }
 

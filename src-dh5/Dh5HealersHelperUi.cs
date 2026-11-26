@@ -1023,6 +1023,20 @@ internal sealed class Dh5HealersHelperUi : IDisposable
                 _draft.MaxAlertSeconds = maxAlert;
                 _draftDirty = true;
             }
+
+            int fallbackDeathHp = _draft.FallbackDeathHp;
+            if (ImGui.DragInt("Fallback Death HP (no LifeState, 0=off)", ref fallbackDeathHp, 10f, LifeStatusEvaluator.MinFallbackDeathHp, LifeStatusEvaluator.MaxFallbackDeathHp, "%d"))
+            {
+                _draft.FallbackDeathHp = Math.Clamp(fallbackDeathHp, LifeStatusEvaluator.MinFallbackDeathHp, LifeStatusEvaluator.MaxFallbackDeathHp);
+                _draftDirty = true;
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(
+                    "Out-of-range death HP cutoff when live DDO LifeState and HitPoints_IncapacitatedBonus are unavailable.\n" +
+                    "Live LifeState (Incapacitated vs Dead) ALWAYS overrides this in entity range (even at -300+ HP).\n" +
+                    "Set to 0 to disable HP-only death fallback.");
+            }
         }
         finally
         {
@@ -1391,7 +1405,7 @@ internal sealed class Dh5HealersHelperUi : IDisposable
 
         ImGui.Separator();
         ImGui.TextColored(SovereignGold, "In-Game Chat Commands (/hh or /healershelper):");
-        ImGui.TextColored(TextMuted, "/hh on|off  •  /hh party  •  /hh focus  •  /hh hp <pct>  •  /hh banner  •  /hh raid");
+        ImGui.TextColored(TextMuted, "/hh on|off  •  /hh party  •  /hh focus  •  /hh hp <pct>  •  /hh deathhp <hp|off>  •  /hh banner  •  /hh raid");
         ImGui.TextColored(TextMuted, "/hh theme <eberron|cannith|feywild>  •  /hh heal  •  /hh target  •  /hh mute <name|clear>  •  /hh score");
     }
 

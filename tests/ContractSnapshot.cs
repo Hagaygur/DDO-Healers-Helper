@@ -144,6 +144,7 @@ internal static class ContractSnapshot
             ["triage.temp-hp-badge-and-threshold"] = lowWinsOverDead.AlertTempHitPoints == 250 && lowWinsOverDead.SecondaryText.Contains("+250 THP", StringComparison.Ordinal),
             ["triage.session-mute-suppresses-alert"] = mutedLow.Severity == BannerSeverity.None,
             ["triage.raid-keymap-readiness-slots-7-12"] = raidKeymap.BoundCount == 2 && raidKeymap.TotalCount == 6,
+            ["fallback_death_hp"] = "true",
             ["theme.default"] = settings.Theme.ToString(),
             ["theme.palette-count"] = UiThemePalette.All.Length,
             ["dh5.quick-cast-disabled-default"] = settings.QuickHealHotbar == 0 && settings.QuickRaiseHotbar == 0,

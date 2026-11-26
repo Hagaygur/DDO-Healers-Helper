@@ -22,9 +22,9 @@ See [GITHUB.md](../../GITHUB.md) for the CI workflow. Local Windows commands:
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
 .\ci\Get-Sdk.ps1
-.\build.ps1 -Version 1.4.0 -Dh5KeyFile C:\path\to\author.key
-dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.4.0-dh4-plugin.zip "$env:DH_SDK_DIR"
-dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.4.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
+.\build.ps1 -Version 1.5.0 -Dh5KeyFile C:\path\to\author.key
+dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.0-dh4-plugin.zip "$env:DH_SDK_DIR"
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
 ```
 
 ## Diagnose by symptom
@@ -34,7 +34,7 @@ dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -
 | DH 5 shows `[NOT AUTHORIZED]` or refuses ZIP | Ensure you installed `*-dh5-plugin.zip` (not `*-dh4-plugin.zip` or `-source.zip`) and all 8 root files incl. `.entitlement(.sig)` + `.manifest(.sig)` + `.pem` are intact |
 | DH 4 banner missing or duplicated under Lossless Scaling | Check `Capture exclusion: ON`; test `Preview Banner` with LS off, then WGC and DXGI independently with the DH 4 panel closed |
 | Self or raid member missing | Verify `Mode` is `Party` (not `SinglePlayer` / `Off`) and member is not session-muted |
-| Dead Soulstone not auto-targeted | By design: Incapacitated (`0..-9 HP`, healable) and Living Low HP allies always outrank Dead Soulstones (`<= -10 HP`) |
+| Dead Soulstone not auto-targeted (or out-of-range ally marked Dead) | By design: Incapacitated allies across DDO's scaling unconscious range and Living Low HP allies always outrank Dead Soulstones. If an ally out of entity range is marked Dead before their actual floor, adjust `FallbackDeathHp` (`-5000..0`, default `-200`, `0` = off) or `/hh deathhp <value\|off>` |
 | Auto-target not switching | Check `TargetingStatus`; `Auto`/`SdkSelectOnly` uses `SelectObject(ulong)` when in range; `PartyKeyOnly` requires keybinds (`7–12` are unbound by default in `ddo.keymap`) |
 | DH 5 Quick-Heal does nothing | Verify `QuickHealHotbar` / `QuickRaiseHotbar` is set `1..20` (`0` = safely disabled by default) |
 

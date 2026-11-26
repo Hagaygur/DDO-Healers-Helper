@@ -30,6 +30,7 @@ internal sealed class Settings
     public int HpThresholdPercent { get; set; } = 50;
     public int RecoveryHysteresisPercent { get; set; } = 3;
     public int DeadAlertSeconds { get; set; } = 6;
+    public int FallbackDeathHp { get; set; } = LifeStatusEvaluator.DefaultFallbackDeathHp;
     public int MaxAlertSeconds { get; set; } = 0;
     public int FontSizePixels { get; set; } = 56;
     public int BannerOpacity { get; set; } = 235;
@@ -110,6 +111,7 @@ internal sealed class Settings
             HpThresholdPercent = HpThresholdPercent,
             RecoveryHysteresisPercent = RecoveryHysteresisPercent,
             DeadAlertSeconds = DeadAlertSeconds,
+            FallbackDeathHp = FallbackDeathHp,
             MaxAlertSeconds = MaxAlertSeconds,
             FontSizePixels = FontSizePixels,
             BannerOpacity = BannerOpacity,
@@ -212,6 +214,7 @@ internal sealed class Settings
         HpThresholdPercent = Math.Clamp(HpThresholdPercent, 5, 95);
         RecoveryHysteresisPercent = Math.Clamp(RecoveryHysteresisPercent, 0, 20);
         DeadAlertSeconds = Math.Clamp(DeadAlertSeconds, 0, 60);
+        FallbackDeathHp = Math.Clamp(FallbackDeathHp, LifeStatusEvaluator.MinFallbackDeathHp, LifeStatusEvaluator.MaxFallbackDeathHp);
         MaxAlertSeconds = Math.Clamp(MaxAlertSeconds, 0, 120);
         FontSizePixels = Math.Clamp(FontSizePixels, 18, 140);
         BannerOpacity = Math.Clamp(BannerOpacity, 20, 255);
@@ -402,6 +405,33 @@ internal static class SettingsInput
 
     public static bool TryStatusFontSize(string text, out int value) =>
         TryIntRange(text, 9, 48, out value);
+
+    public static bool TryParseFallbackDeathHp(string? text, out int value)
+    {
+        value = 0;
+        string trimmed = (text ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            return false;
+
+        if (string.Equals(trimmed, "off", StringComparison.OrdinalIgnoreCase))
+        {
+            value = 0;
+            return true;
+        }
+
+        if (!long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
+            return false;
+
+        if (parsed == 0)
+        {
+            value = 0;
+            return true;
+        }
+
+        long normalized = parsed > 0 ? -parsed : parsed;
+        value = (int)Math.Clamp(normalized, LifeStatusEvaluator.MinFallbackDeathHp, LifeStatusEvaluator.MaxFallbackDeathHp);
+        return true;
+    }
 
     public static bool TryIntRange(string text, int min, int max, out int value) =>
         int.TryParse((text ?? "").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value)

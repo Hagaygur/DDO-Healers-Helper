@@ -29,9 +29,9 @@ Build with the .NET 10 SDK (`global.json`); do not merge `src/` and `src-dh5/` i
   - **NEVER** commit, print, or package `*.key`, `*.pfx`, `signing.*`, `.sdk-cache/`, PDBs, docs, or `VoK.Sdk.dll` inside plugin or source ZIPs. `ci/sign_dh5.py` must clean temporary signing directories in `finally:`.
 - **Keep SDK callbacks short and deadlock-free**:
   - DH 4: keep callbacks short; poll `GetPartyMembers()` + self (`GetCurrentCharacterId()` / `GetCurrentCharacter()`) and enrich with `GetEntity(id)` for `LifeState` and `HitPoints_Temp`.
-  - DH 5: **NEVER** call `.Result` / `.GetAwaiter().GetResult()` on frame-marshaled SDK calls inside `ClientFrameStep()`, `ImGui_Render()`, or `lock`. Hydrate live `LifeState` via `await entity.UpdateProperties([0x10000E0Cu])` in `Dh5HealerEngine.TickAsync()`, track connection state via `eventProvider.Party`, and override `IPlugin.WindowVisible` (`false` by default). Zero `System.Windows.Forms` or `System.Media` references in `src-dh5/`.
+  - DH 5: **NEVER** call `.Result` / `.GetAwaiter().GetResult()` on frame-marshaled SDK calls inside `ClientFrameStep()`, `ImGui_Render()`, or `lock`. Hydrate live `LifeState`, `Death_SoulStoneID`, and `HitPoints_IncapacitatedBonus` via `await entity.UpdateProperties([0x10000E0Cu, 0x10001868u, 0x10008250u])` in `Dh5HealerEngine.TickAsync()`, track connection state via `eventProvider.Party`, and override `IPlugin.WindowVisible` (`false` by default). Zero `System.Windows.Forms` or `System.Media` references in `src-dh5/`.
 - **3-State Life/Death Triage & Targetless Quick-Cast**:
-  - Incapacitated (`0..-9 HP`, healable) outranks Living Low HP, which outranks Dead Soulstone (`<= -10 HP`, calm Spectral Violet `DEAD — RAISE`, never steals auto-target from living allies).
+  - Incapacitated across DDO's scaling unconscious range (via `LifeStatusEvaluator`: live `LifeState` + `Death_SoulStoneID` in range; sticky confirmed death -> cached `HitPoints_IncapacitatedBonus` -> `FallbackDeathHp` out of range) outranks Living Low HP, which outranks Dead Soulstone (calm Spectral Violet `DEAD — RAISE`, never steals auto-target from living allies).
   - Guard `GetSelectedObjectId()` properly (`(ulong?)0` when unselected; require `targetId > 0 && targetId < ulong.MaxValue`, `!IsDeleted`, `GetSelectedObjectId().GetValueOrDefault() != targetId`).
   - In DH 5, `InvokeHotbar(bar, slot, targetId)` defaults to disabled (`QuickHealHotbar = 0`, `QuickRaiseHotbar = 0`) until configured.
 - **Hotkeys, HUD, Themes & Compatibility**:
@@ -46,9 +46,9 @@ Build with the .NET 10 SDK (`global.json`); do not merge `src/` and `src-dh5/` i
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
 .\ci\Get-Sdk.ps1
-.\build.ps1 -Version 1.4.0 -Dh5KeyFile C:\path\to\author.key
-dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.4.0-dh4-plugin.zip "$env:DH_SDK_DIR"
-dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.4.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
+.\build.ps1 -Version 1.5.0 -Dh5KeyFile C:\path\to\author.key
+dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.0-dh4-plugin.zip "$env:DH_SDK_DIR"
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
 ```
 
 ## Documentation and completion

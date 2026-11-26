@@ -30,6 +30,7 @@ internal static class Program
         TestBannerPresentationAndPositioning();
         TestStatusHudPresentation();
         TestThreeStateTriageTempHpMuteAndRaidKeymap();
+        TestLifeStatusEvaluatorAndFallbackDeathHp();
         TestUiThemePalettesAndStage2Settings();
         TestOfflineSettingsEngineView();
 
@@ -1125,7 +1126,7 @@ internal static class Program
                && soulFrame.BorderColorArgb == BannerPresentation.SoulstoneBorderArgb,
             "Dead Soulstone renders calm non-flashing Spectral Violet + Bone-Silver banner");
 
-        // 3b. Bleed-out from timed-out Incapacitated (0..-9 HP) to Dead Soulstone (<=-10 HP) triggers fresh DEAD — RAISE alert,
+        // 3b. Bleed-out from timed-out Incapacitated (0 or negative HP within unconscious range) to Dead Soulstone triggers fresh DEAD — RAISE alert,
         //     then times out and stays latched even if corpse leaves entity bubble (IsTrulyDead=false) until revived (HP > 0).
         var bleedState = new HealerState();
         var bleedIncap = new[] { self, new WatchedMemberSnapshot(7, "Fighter", -5, 200, 1, true, true, IsTrulyDead: false) };
@@ -1187,6 +1188,119 @@ internal static class Program
                && allBound.BoundCount == 6 && allBound.Summary.Contains("6/6 bound")
                && offlineKeymap.Summary.Contains("offline"),
             "EvaluateRaidKeymapReadiness accurately counts bound raid slots 7-12");
+    }
+
+    private static void TestLifeStatusEvaluatorAndFallbackDeathHp()
+    {
+        // 1. Disconnected always yields (false, false) regardless of LifeState or negative HP.
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(false, -500, 1000, true, LifeStatusEvaluator.LifeStateDead, true, true, 0, -200) == (false, false),
+            "LifeStatusEvaluator: disconnected member returns (false, false)");
+
+        // 2. Authoritative live LifeState: Incapacitated at -320 HP stays healable regardless of FallbackDeathHp (-200 or -10), cached bonus, or sticky dead flag.
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -320, 1200, true, LifeStatusEvaluator.LifeStateIncapacitated, true, true, 0, -200) == (true, false),
+            "LifeStatusEvaluator: live LifeState.Incapacitated at -320 HP stays healable and ignores FallbackDeathHp=-200");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -950, 2000, true, LifeStatusEvaluator.LifeStateIncapacitated, false, false, 0, -10) == (true, false),
+            "LifeStatusEvaluator: live LifeState.Incapacitated at -950 HP stays healable even with low FallbackDeathHp");
+
+        // 3. Authoritative live LifeState.Dead at -45 HP stays TrulyDead even with FallbackDeathHp=-200 or 0 (disabled).
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -45, 1000, true, LifeStatusEvaluator.LifeStateDead, false, false, 500, -200) == (true, true),
+            "LifeStatusEvaluator: live LifeState.Dead at -45 HP returns (true, true)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -45, 1000, true, LifeStatusEvaluator.LifeStateDead, false, false, null, 0) == (true, true),
+            "LifeStatusEvaluator: live LifeState.Dead stays Dead even when FallbackDeathHp=0");
+
+        // 4. Authoritative live LifeState.Alive: positive HP -> (false, false); 0 HP with maxHp > 0 -> (true, false).
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 100, 1000, true, LifeStatusEvaluator.LifeStateAlive, false, true, null, -200) == (false, false),
+            "LifeStatusEvaluator: live LifeState.Alive at positive HP returns (false, false)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 0, 1000, true, LifeStatusEvaluator.LifeStateAlive, false, true, null, -200) == (true, false),
+            "LifeStatusEvaluator: live LifeState.Alive at 0 HP returns (true, false)");
+
+        // 5. Unavailable live LifeState (Undef=0 or null) with active soulstone property on live entity.
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -45, 1000, true, LifeStatusEvaluator.LifeStateUndef, true, false, 500, 0) == (true, true),
+            "LifeStatusEvaluator: live entity with LifeState.Undef + soulstone property at <=0 HP returns (true, true)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 0, 0, true, null, true, false, null, 0) == (true, true),
+            "LifeStatusEvaluator: live entity with null LifeState + soulstone property at maxHp==0 returns (true, true)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 150, 1000, true, LifeStatusEvaluator.LifeStateUndef, true, false, null, -200) == (false, false),
+            "LifeStatusEvaluator: live entity with positive HP ignores stale soulstone property");
+
+        // 6. Out of entity bubble: sticky wasConfirmedDead holds until HP > 0.
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -45, 1000, false, null, false, wasConfirmedDead: true, cachedIncapBonus: 500, fallbackDeathHp: 0) == (true, true),
+            "LifeStatusEvaluator: out-of-bubble wasConfirmedDead stays sticky Dead at -45 HP even with FallbackDeathHp=0");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 120, 1000, false, null, false, wasConfirmedDead: true, cachedIncapBonus: 0, fallbackDeathHp: -200) == (false, false),
+            "LifeStatusEvaluator: out-of-bubble HP > 0 clears down/dead state even if wasConfirmedDead was true");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, 0, 0, false, null, false, wasConfirmedDead: true, cachedIncapBonus: null, fallbackDeathHp: -200) == (false, false),
+            "LifeStatusEvaluator: out-of-bubble maxHp <= 0 returns (false, false)");
+
+        // 7. Out of entity bubble: cached HitPoints_IncapacitatedBonus (-10 - bonus) takes precedence over FallbackDeathHp.
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -309, 1000, false, null, false, false, cachedIncapBonus: 300, fallbackDeathHp: -200) == (true, false),
+            "LifeStatusEvaluator: cached HitPoints_IncapacitatedBonus=300 keeps -309 HP healable (> -310)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -310, 1000, false, null, false, false, cachedIncapBonus: 300, fallbackDeathHp: -200) == (true, true),
+            "LifeStatusEvaluator: cached HitPoints_IncapacitatedBonus=300 marks -310 HP Dead (<= -10 - 300)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -9, 1000, false, null, false, false, cachedIncapBonus: 0, fallbackDeathHp: -200) == (true, false)
+               && LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -10, 1000, false, null, false, false, cachedIncapBonus: 0, fallbackDeathHp: -200) == (true, true),
+            "LifeStatusEvaluator: cached HitPoints_IncapacitatedBonus=0 uses -10 boundary (-9 healable, -10 dead)");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -5000, 1000, false, null, false, false, cachedIncapBonus: int.MaxValue, fallbackDeathHp: -200) == (true, false),
+            "LifeStatusEvaluator: huge cachedIncapBonus does not overflow int");
+
+        // 8. Out of entity bubble: configurable FallbackDeathHp (-200 default and 0 disabled).
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -199, 1000, false, null, false, false, null, -200) == (true, false),
+            "LifeStatusEvaluator: FallbackDeathHp=-200 keeps -199 HP healable");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -200, 1000, false, null, false, false, null, -200) == (true, true),
+            "LifeStatusEvaluator: FallbackDeathHp=-200 marks -200 HP Dead");
+        Assert(LifeStatusEvaluator.EvaluateMemberLifeStatus(true, -750, 1000, false, null, false, false, null, 0) == (true, false),
+            "LifeStatusEvaluator: FallbackDeathHp=0 (disabled) never infers death from negative HP alone");
+
+        // 9. HealerState & StreakTracker treat deep negative Incapacitated (-320 HP, IsTrulyDead=false) as healable without resetting streak.
+        var deepIncapMember = new WatchedMemberSnapshot(10, "DiehardTank", -320, 2000, 1, true, IsDeadOrDown: true, IsTrulyDead: false);
+        var deepView = new HealerState().Evaluate(new[] { deepIncapMember }, new Settings(), 10.0);
+        Assert(deepView.Severity == BannerSeverity.CriticalDown && !deepView.IsSoulstone
+               && deepView.PrimaryText == "DOWN: DiehardTank" && deepView.SecondaryText.Contains("-320/2000 HP")
+               && deepView.SecondaryText.Contains("INCAP (HEALABLE)"),
+            "HealerState formats deep negative Incapacitated (-320 HP) as healable CriticalDown");
+        var streakSettings = new Settings { CurrentSaveStreak = 5, BestSaveStreak = 5 };
+        Assert(!new StreakTracker().ProcessWatched(new[] { deepIncapMember }, new[] { deepIncapMember }, true, false, streakSettings)
+               && streakSettings.CurrentSaveStreak == 5,
+            "StreakTracker preserves save streak when ally is Incapacitated at -320 HP");
+
+        // 10. Settings.FallbackDeathHp default, Validate() clamping [-5000, 0], Copy(), JSON persistence, and /hh deathhp parser.
+        var defSettings = new Settings();
+        Assert(defSettings.FallbackDeathHp == -200, "Settings.FallbackDeathHp defaults to -200");
+        var tooLow = new Settings { FallbackDeathHp = -9999 };
+        var tooHigh = new Settings { FallbackDeathHp = 250 };
+        tooLow.Validate();
+        tooHigh.Validate();
+        Assert(tooLow.FallbackDeathHp == -5000 && tooHigh.FallbackDeathHp == 0,
+            "Settings.Validate clamps FallbackDeathHp to [-5000, 0]");
+        Assert(new Settings { FallbackDeathHp = -350 }.Copy().FallbackDeathHp == -350,
+            "Settings.Copy preserves FallbackDeathHp");
+
+        Assert(SettingsInput.TryParseFallbackDeathHp("off", out int pOff) && pOff == 0
+               && SettingsInput.TryParseFallbackDeathHp("OFF", out int pOffUpper) && pOffUpper == 0
+               && SettingsInput.TryParseFallbackDeathHp("0", out int pZero) && pZero == 0
+               && SettingsInput.TryParseFallbackDeathHp("350", out int pPos) && pPos == -350
+               && SettingsInput.TryParseFallbackDeathHp("-350", out int pNeg) && pNeg == -350
+               && SettingsInput.TryParseFallbackDeathHp("9000", out int pClampPos) && pClampPos == -5000
+               && SettingsInput.TryParseFallbackDeathHp("-9000", out int pClampNeg) && pClampNeg == -5000
+               && !SettingsInput.TryParseFallbackDeathHp("", out _)
+               && !SettingsInput.TryParseFallbackDeathHp("abc", out _),
+            "SettingsInput.TryParseFallbackDeathHp parses off/0/positive/negative with [-5000, 0] clamping");
+
+        string dir = Path.Combine(Path.GetTempPath(), "healers-helper-deathhp-tests-" + Guid.NewGuid());
+        try
+        {
+            var store = new SettingsStore(dir);
+            var s = store.Load();
+            Assert(s.FallbackDeathHp == -200, "SettingsStore loads default FallbackDeathHp=-200");
+            s.FallbackDeathHp = -425;
+            store.Save(s);
+            Assert(store.Load().FallbackDeathHp == -425, "SettingsStore round-trips FallbackDeathHp=-425");
+            s.FallbackDeathHp = 0;
+            store.Save(s);
+            Assert(store.Load().FallbackDeathHp == 0, "SettingsStore round-trips FallbackDeathHp=0 (disabled)");
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
     }
 
     private static void TestUiThemePalettesAndStage2Settings()

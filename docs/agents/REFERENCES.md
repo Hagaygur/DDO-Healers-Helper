@@ -16,7 +16,7 @@ Human counterpart and annotated source table: [References](../human/REFERENCES.m
 - Always inspect pinned binaries (`VoK.Sdk.dll` `4.2.1.0` + `DungeonHelper.dll` `4.2.0.146` for DH 4; `VoK.Sdk.dll` `5.3.0.0` + `DungeonHelper.dll` `5.0.858.0` for DH 5 Beta) rather than guessing API semantics.
 - Key verified DH 5 (`5.0.858` / `5.3.0.0`) semantics:
   - `VoK.Sdk.IPlugin` (`[PluginId]`, `[PluginName]`, `[PluginIcon]`, `WindowVisible`, `ClientFrameStep`, `ImGui_Render`) replaces `IDdoPlugin` + `IPluginUI`.
-  - `IEntityExtensions.LifeState(entity)` reads property `0x10000E0C` from `InstanceProperties`, requiring `await entity.UpdateProperties([0x10000E0Cu])` for live death/incapacitation updates.
+  - `IEntityExtensions.LifeState(entity)` reads property `0x10000E0C` from `InstanceProperties`, requiring `await entity.UpdateProperties([0x10000E0Cu, 0x10001868u, 0x10008250u])` for live death/incapacitation, Soulstone (`Death_SoulStoneID`), and personal unconscious range (`HitPoints_IncapacitatedBonus`) updates.
   - `InvokeHotbar(bar, slot, targetId)` acts without dropping the player's current hard target.
   - `PluginTrustGate` requires Authenticode + `.pem` + `.manifest(.sig)` + DH-issuer-signed `.entitlement(.sig)` at archive root.
 - Keep private keys (`*.key`, `*.pfx`), user logs, character names from live captures, and downloaded SDK binaries out of source control and release archives.

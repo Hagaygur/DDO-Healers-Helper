@@ -13,17 +13,21 @@ using VoK.Sdk.Ddo;
 using VoK.Sdk.Ddo.Enums;
 using VoK.Sdk.Events;
 using VoK.Sdk.Helpers;
+using VoK.Sdk.Properties;
 
 namespace VoK.HealersHelper;
 
 // Async, non-blocking DH 5 Beta engine (net10.0, x64, zero WinForms/System.Media).
-// Awaits frame-marshaled SDK calls outside lock(_gate), hydrates LifeState property
-// 0x10000E0C live, tracks party connection state via eventProvider.Party, supports
-// targetless InvokeHotbar quick-heal/quick-raise, and handles /hh chat commands.
+// Awaits frame-marshaled SDK calls outside lock(_gate), hydrates LifeState (0x10000E0C),
+// Death_SoulStoneID (0x10001868), and HitPoints_IncapacitatedBonus (0x10008250) live,
+// tracks party connection state via eventProvider.Party, supports targetless InvokeHotbar
+// quick-heal/quick-raise, and handles /hh chat commands.
 internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
 {
-    internal const uint LifeStatePropertyId = 0x10000E0Cu;
-    private static readonly uint[] LifeStateProps = [LifeStatePropertyId];
+    internal const uint LifeStatePropertyId = LifeStatusEvaluator.DeathLifeStatePropertyId;
+    internal const uint SoulStonePropertyId = LifeStatusEvaluator.DeathSoulStoneIdPropertyId;
+    internal const uint IncapacitatedBonusPropertyId = LifeStatusEvaluator.HitPointsIncapacitatedBonusPropertyId;
+    private static readonly uint[] LifeStateProps = [LifeStatePropertyId, SoulStonePropertyId, IncapacitatedBonusPropertyId];
 
     private const uint MbIconExclamation = 0x00000030u;
     private const uint CfUnicodeText = 13u;
@@ -38,10 +42,25 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
 
     private readonly record struct HotkeyEvent(int VirtualKey, bool Ctrl, bool Shift, bool Alt, bool IsDown, double ReceivedAt);
 
+    private sealed record MemberScanObservation(
+        ulong Id,
+        string Name,
+        int HitPoints,
+        int MaxHitPoints,
+        int PartySlotIndex,
+        bool Connected,
+        int TempHitPoints,
+        int SpellPoints,
+        int MaxSpellPoints,
+        bool HasLiveEntity,
+        int? LifeStateRaw,
+        bool HasSoulstoneProperty,
+        int? LiveIncapBonus);
+
     private sealed record WorldSnapshot(
         ulong? CharacterId,
         bool InTown,
-        WatchedMemberSnapshot[] Members,
+        MemberScanObservation[] Observations,
         int? SelfSpellPoints,
         bool RestoreTargetInRange,
         bool RestoreTargetDeadNonPlayer,
@@ -60,6 +79,8 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
     private readonly ConcurrentDictionary<ulong, bool> _partyConnected = new();
     private readonly HashSet<ulong> _mutedIds = new();
     private readonly HashSet<string> _mutedNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<ulong> _confirmedDeadIds = new();
+    private readonly Dictionary<ulong, int> _cachedIncapBonus = new();
     private readonly object _gate = new();
     private readonly Timer _timer;
 
@@ -159,12 +180,28 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             });
             partyEvents.OnMemberLeft?.AddHandler((id, _) =>
             {
-                if (!_disposed && id != 0) _partyConnected.TryRemove(id, out bool _);
+                if (!_disposed && id != 0)
+                {
+                    _partyConnected.TryRemove(id, out bool _);
+                    lock (_gate)
+                    {
+                        _confirmedDeadIds.Remove(id);
+                        _cachedIncapBonus.Remove(id);
+                    }
+                }
                 return Task.CompletedTask;
             });
             partyEvents.OnDisbanded?.AddHandler(() =>
             {
-                if (!_disposed) _partyConnected.Clear();
+                if (!_disposed)
+                {
+                    _partyConnected.Clear();
+                    lock (_gate)
+                    {
+                        _confirmedDeadIds.Clear();
+                        _cachedIncapBonus.Clear();
+                    }
+                }
                 return Task.CompletedTask;
             });
         }
@@ -242,7 +279,7 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         string trimmed = (rest ?? "").Trim();
         if (string.IsNullOrEmpty(trimmed) || trimmed.Equals("help", StringComparison.OrdinalIgnoreCase))
         {
-            PrintChat("Commands: /hh on|off | party | focus | hp <5-95> | banner | raid | theme <eberron|cannith|feywild> | heal | target | mute <name|clear> | score | reset | status");
+            PrintChat("Commands: /hh on|off | party | focus | hp <5-95> | deathhp <hp|off> | banner | raid | theme <eberron|cannith|feywild> | heal | target | mute <name|clear> | score | reset | status");
             return Task.CompletedTask;
         }
 
@@ -292,6 +329,28 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
                 else
                 {
                     PrintChat("Usage: /hh hp <5-95>");
+                }
+                break;
+
+            case "deathhp":
+                if (string.IsNullOrEmpty(arg))
+                {
+                    int curDeathHp = GetSettings().FallbackDeathHp;
+                    string curDesc = curDeathHp == 0 ? "OFF (0)" : $"{curDeathHp} HP";
+                    PrintChat($"Fallback death HP (out of entity range): {curDesc}. Usage: /hh deathhp <-5000..0|off>");
+                }
+                else if (SettingsInput.TryParseFallbackDeathHp(arg, out int parsedDeathHp))
+                {
+                    var s = GetSettings();
+                    s.FallbackDeathHp = parsedDeathHp;
+                    SaveSettings(s);
+                    PrintChat(parsedDeathHp == 0
+                        ? "Fallback death HP set to OFF (0): out-of-range allies stay Incapacitated unless Dead is confirmed."
+                        : $"Fallback death HP set to {parsedDeathHp} HP (used out of entity range when LifeState/IncapBonus unavailable).");
+                }
+                else
+                {
+                    PrintChat("Usage: /hh deathhp <-5000..0|off> (e.g. /hh deathhp -200, /hh deathhp 350, or /hh deathhp off)");
                 }
                 break;
 
@@ -410,7 +469,10 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
                 var s = GetSettings();
                 var muted = GetMutedPlayerNames();
                 string mutedPart = muted.Count > 0 ? $" | Muted: {string.Join(", ", muted)}" : "";
-                PrintChat($"Plugin={(s.PluginEnabled ? "ON" : "OFF")} | Mode={s.Mode} | HP<={s.HpThresholdPercent}% | Theme={UiThemePalette.For(s.Theme).Key} | Banner={(s.HudEnabled ? "ON" : "OFF")} | RaidHUD={(s.RaidHudEnabled ? "ON" : "OFF")} | {GetRaidKeymapSummary()}{mutedPart}");
+                string deathHpPart = s.FallbackDeathHp == 0
+                    ? "OFF"
+                    : s.FallbackDeathHp.ToString(CultureInfo.InvariantCulture);
+                PrintChat($"Plugin={(s.PluginEnabled ? "ON" : "OFF")} | Mode={s.Mode} | HP<={s.HpThresholdPercent}% | DeathHP={deathHpPart} | Theme={UiThemePalette.For(s.Theme).Key} | Banner={(s.HudEnabled ? "ON" : "OFF")} | RaidHUD={(s.RaidHudEnabled ? "ON" : "OFF")} | {GetRaidKeymapSummary()}{mutedPart}");
                 break;
             }
 
@@ -458,6 +520,8 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
                 _partyConnected.Clear();
                 _mutedIds.Clear();
                 _mutedNames.Clear();
+                _confirmedDeadIds.Clear();
+                _cachedIncapBonus.Clear();
                 _nextAutoAllowedAt = 0;
                 _character = null;
                 _inTown = false;
@@ -1039,7 +1103,7 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
 
         if (!charId.HasValue || charId.Value == 0 || charId.Value == ulong.MaxValue)
         {
-            return new WorldSnapshot(null, false, Array.Empty<WatchedMemberSnapshot>(), null, false, false, inRange);
+            return new WorldSnapshot(null, false, Array.Empty<MemberScanObservation>(), null, false, false, inRange);
         }
 
         bool inTown = false;
@@ -1050,7 +1114,7 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         catch { }
 
         ulong selfId = charId.Value;
-        var list = new List<WatchedMemberSnapshot>(12);
+        var list = new List<MemberScanObservation>(12);
         var seen = new HashSet<ulong>();
 
         IEntity? selfEntity = null;
@@ -1082,9 +1146,9 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         if (selfEntity is not null && !selfEntity.IsDeleted)
         {
             inRange.Add(selfId);
-            LifeState? lifeState = SafeGetLifeState(selfEntity);
-            bool isTrulyDead = lifeState == LifeState.Dead;
-            bool explicitDown = isTrulyDead || lifeState == LifeState.Incapacitated;
+            var (lifeStateRaw, hasSoulstoneProp, liveIncapBonus) = ReadEntityLifeHints(selfEntity);
+            bool explicitDown = lifeStateRaw is LifeStatusEvaluator.LifeStateDead or LifeStatusEvaluator.LifeStateIncapacitated
+                || hasSoulstoneProp;
 
             int hp;
             int maxHp;
@@ -1102,13 +1166,16 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             int tempHp = Math.Max(0, selfEntity.HitPoints_Temp ?? 0);
             int sp = Math.Max(0, selfEntity.SpellPoints_Current ?? 0);
             int maxSp = Math.Max(0, selfEntity.SpellPoints_Max ?? 0);
-            bool isDown = explicitDown || (maxHp > 0 && hp <= 0);
-            list.Add(new WatchedMemberSnapshot(selfId, selfName, hp, maxHp, 0, true, isDown, isTrulyDead, tempHp, sp, maxSp));
+            list.Add(new MemberScanObservation(
+                selfId, selfName, hp, maxHp, 0, true, tempHp, sp, maxSp,
+                HasLiveEntity: true, lifeStateRaw, hasSoulstoneProp, liveIncapBonus));
             selfSp = selfEntity.SpellPoints_Current;
         }
         else
         {
-            list.Add(new WatchedMemberSnapshot(selfId, selfName, 0, 0, 0, false, false, false));
+            list.Add(new MemberScanObservation(
+                selfId, selfName, 0, 0, 0, false, 0, 0, 0,
+                HasLiveEntity: false, null, false, null));
         }
         seen.Add(selfId);
 
@@ -1138,11 +1205,13 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
 
                 // Re-check IsDeleted strictly AFTER awaiting frame-marshaled UpdateProperties.
                 bool hasLiveEntity = ent is not null && !ent.IsDeleted;
-                LifeState? entLife = null;
+                int? lifeStateRaw = null;
+                bool hasSoulstoneProp = false;
+                int? liveIncapBonus = null;
                 if (hasLiveEntity)
                 {
                     inRange.Add(m.Id);
-                    entLife = SafeGetLifeState(ent!);
+                    (lifeStateRaw, hasSoulstoneProp, liveIncapBonus) = ReadEntityLifeHints(ent!);
                 }
 
                 int hp = (hasLiveEntity ? ent!.HitPoints_Current : null) ?? m.HitPoints;
@@ -1155,11 +1224,9 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
                     ? m.Name
                     : (hasLiveEntity && !string.IsNullOrWhiteSpace(ent!.Name) ? ent.Name : $"Member {slot}");
 
-                bool isTrulyDead = connected && hasLiveEntity && entLife == LifeState.Dead;
-                bool isDown = (hasLiveEntity && entLife is LifeState.Dead or LifeState.Incapacitated)
-                    || (connected && maxHp > 0 && hp <= 0);
-
-                list.Add(new WatchedMemberSnapshot(m.Id, name, hp, maxHp, slot, connected, isDown, isTrulyDead, tempHp, sp, maxSp));
+                list.Add(new MemberScanObservation(
+                    m.Id, name, hp, maxHp, slot, connected, tempHp, sp, maxSp,
+                    hasLiveEntity, lifeStateRaw, hasSoulstoneProp, liveIncapBonus));
             }
         }
 
@@ -1195,7 +1262,7 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
 
     private async Task TryAddExternalFocusedPlayerAsync(
         Settings settings,
-        List<WatchedMemberSnapshot> list,
+        List<MemberScanObservation> list,
         HashSet<ulong> seen,
         HashSet<ulong> inRange)
     {
@@ -1240,9 +1307,9 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             return;
 
         inRange.Add(ent.InstanceId);
-        LifeState? life = SafeGetLifeState(ent);
-        bool isTrulyDead = life == LifeState.Dead;
-        bool explicitDown = isTrulyDead || life == LifeState.Incapacitated;
+        var (lifeStateRaw, hasSoulstoneProp, liveIncapBonus) = ReadEntityLifeHints(ent);
+        bool explicitDown = lifeStateRaw is LifeStatusEvaluator.LifeStateDead or LifeStatusEvaluator.LifeStateIncapacitated
+            || hasSoulstoneProp;
 
         int hp;
         int maxHp;
@@ -1260,13 +1327,14 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         int tempHp = Math.Max(0, ent.HitPoints_Temp ?? 0);
         int sp = Math.Max(0, ent.SpellPoints_Current ?? 0);
         int maxSp = Math.Max(0, ent.SpellPoints_Max ?? 0);
-        bool isDown = explicitDown || (maxHp > 0 && hp <= 0);
         string name = !string.IsNullOrWhiteSpace(ent.Name)
             ? ent.Name
             : (!string.IsNullOrWhiteSpace(settings.FocusedPlayerName)
                 ? settings.FocusedPlayerName
                 : $"Player 0x{ent.InstanceId:X}");
-        list.Add(new WatchedMemberSnapshot(ent.InstanceId, name, hp, maxHp, -1, true, isDown, isTrulyDead, tempHp, sp, maxSp));
+        list.Add(new MemberScanObservation(
+            ent.InstanceId, name, hp, maxHp, -1, true, tempHp, sp, maxSp,
+            HasLiveEntity: true, lifeStateRaw, hasSoulstoneProp, liveIncapBonus));
     }
 
     private static async Task HydrateLifeStateAsync(IEntity? entity)
@@ -1287,6 +1355,170 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         catch { return null; }
     }
 
+    private static (int? LifeStateRaw, bool HasSoulstoneProp, int? IncapBonus) ReadEntityLifeHints(IEntity ent)
+    {
+        int? lifeStateRaw = SafeGetLifeState(ent) is { } ls ? (int)ls : TryReadLifeStateProperty(ent);
+        bool hasSoulstone = IsActiveSoulstoneProperty(TryGetEntityProperty(ent, SoulStonePropertyId));
+        int? incapBonus = TryReadNonNegativeIntProperty(TryGetEntityProperty(ent, IncapacitatedBonusPropertyId));
+        return (lifeStateRaw, hasSoulstone, incapBonus);
+    }
+
+    private static IProperty? TryGetEntityProperty(IEntity ent, uint propertyId)
+    {
+        try
+        {
+            return ent.GetProperty(propertyId)
+                ?? ent.InstanceProperties?.GetProperty(propertyId)
+                ?? ent.DetailedProperties?.GetProperty(propertyId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int? TryReadLifeStateProperty(IEntity ent)
+    {
+        IProperty? prop = TryGetEntityProperty(ent, LifeStatePropertyId);
+        if (prop is null) return null;
+        try
+        {
+            if (prop is IUInt32Property u32 && u32.UInt32Value is { } uv)
+                return unchecked((int)uv);
+            if (prop is IInt32Property i32 && i32.Int32Value is { } iv)
+                return iv;
+            return prop.Value switch
+            {
+                LifeState ls => (int)ls,
+                uint v => unchecked((int)v),
+                int v => v,
+                _ => null
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsActiveSoulstoneProperty(IProperty? prop)
+    {
+        if (prop is null) return false;
+        try
+        {
+            if (prop is IInt64Property i64 && i64.Int64Value is { } i64v)
+                return i64v != 0 && i64v != -1;
+            if (prop is IUInt32Property u32 && u32.UInt32Value is { } u32v)
+                return u32v != 0 && u32v != uint.MaxValue;
+            if (prop is IInt32Property i32 && i32.Int32Value is { } i32v)
+                return i32v != 0 && i32v != -1;
+
+            return prop.Value switch
+            {
+                ulong v => v != 0 && v != ulong.MaxValue,
+                long v => v != 0 && v != -1,
+                uint v => v != 0 && v != uint.MaxValue,
+                int v => v != 0 && v != -1,
+                _ => false
+            };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int? TryReadNonNegativeIntProperty(IProperty? prop)
+    {
+        if (prop is null) return null;
+        try
+        {
+            if (prop is IInt32Property i32 && i32.Int32Value is { } iv)
+                return iv is >= 0 and <= 1_000_000 ? iv : null;
+            if (prop is IFloatProperty fp && fp.FloatValue is { } fv && float.IsFinite(fv))
+                return fv is >= 0f and <= 1_000_000f ? (int)Math.Round(fv) : null;
+            if (prop is IDoubleProperty dp && dp.DoubleValue is { } dv && double.IsFinite(dv))
+                return dv is >= 0.0 and <= 1_000_000.0 ? (int)Math.Round(dv) : null;
+            if (prop is IInt64Property i64 && i64.Int64Value is { } lv)
+                return lv is >= 0 and <= 1_000_000 ? (int)lv : null;
+            if (prop is IUInt32Property u32 && u32.UInt32Value is { } uv)
+                return uv <= 1_000_000 ? (int)uv : null;
+
+            return prop.Value switch
+            {
+                int v => v is >= 0 and <= 1_000_000 ? v : null,
+                float f => float.IsFinite(f) && f is >= 0f and <= 1_000_000f ? (int)Math.Round(f) : null,
+                double d => double.IsFinite(d) && d is >= 0.0 and <= 1_000_000.0 ? (int)Math.Round(d) : null,
+                long l => l is >= 0 and <= 1_000_000 ? (int)l : null,
+                uint u => u <= 1_000_000 ? (int)u : null,
+                _ => null
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private WatchedMemberSnapshot EvaluateAndTrackObservationLocked(MemberScanObservation obs)
+    {
+        if (obs.HasLiveEntity && obs.LiveIncapBonus is >= 0)
+            _cachedIncapBonus[obs.Id] = obs.LiveIncapBonus.Value;
+
+        if (obs.HasLiveEntity
+            && (obs.LifeStateRaw == LifeStatusEvaluator.LifeStateDead
+                || (obs.HasSoulstoneProperty && (obs.MaxHitPoints <= 0 || obs.HitPoints <= 0))))
+        {
+            _confirmedDeadIds.Add(obs.Id);
+        }
+        else if (obs.HitPoints > 0
+            || (obs.HasLiveEntity && obs.LifeStateRaw is LifeStatusEvaluator.LifeStateAlive or LifeStatusEvaluator.LifeStateIncapacitated))
+        {
+            _confirmedDeadIds.Remove(obs.Id);
+        }
+
+        bool wasConfirmedDead = _confirmedDeadIds.Contains(obs.Id);
+        int? cachedIncapBonus = _cachedIncapBonus.TryGetValue(obs.Id, out int bonus) ? bonus : null;
+        var (isDown, isTrulyDead) = LifeStatusEvaluator.EvaluateMemberLifeStatus(
+            obs.Connected,
+            obs.HitPoints,
+            obs.MaxHitPoints,
+            obs.HasLiveEntity,
+            obs.LifeStateRaw,
+            obs.HasSoulstoneProperty,
+            wasConfirmedDead,
+            cachedIncapBonus,
+            _settings.FallbackDeathHp);
+
+        return new WatchedMemberSnapshot(
+            obs.Id,
+            obs.Name,
+            obs.HitPoints,
+            obs.MaxHitPoints,
+            obs.PartySlotIndex,
+            obs.Connected,
+            isDown,
+            isTrulyDead,
+            obs.TempHitPoints,
+            obs.SpellPoints,
+            obs.MaxSpellPoints);
+    }
+
+    private void PruneLifeCachesLocked(HashSet<ulong> activeIds)
+    {
+        if (_confirmedDeadIds.Count > 0)
+        {
+            foreach (ulong id in _confirmedDeadIds.Where(id => !activeIds.Contains(id)).ToArray())
+                _confirmedDeadIds.Remove(id);
+        }
+
+        if (_cachedIncapBonus.Count > 0)
+        {
+            foreach (ulong id in _cachedIncapBonus.Keys.Where(id => !activeIds.Contains(id)).ToArray())
+                _cachedIncapBonus.Remove(id);
+        }
+    }
+
     private void ApplyWorldSnapshotLocked(WorldSnapshot world, double now)
     {
         if (world.CharacterId != _character)
@@ -1299,6 +1531,8 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             _partyConnected.Clear();
             _mutedIds.Clear();
             _mutedNames.Clear();
+            _confirmedDeadIds.Clear();
+            _cachedIncapBonus.Clear();
             _nextAutoAllowedAt = 0;
             _pendingRestoreTargetId = 0;
             _character = world.CharacterId;
@@ -1315,19 +1549,32 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         _inRangeEntityIds = world.InRangeEntityIds;
         _restoreTargetInRange = world.RestoreTargetInRange;
         _restoreTargetDeadNonPlayer = world.RestoreTargetDeadNonPlayer;
-        Volatile.Write(ref _members, world.Members);
 
         if (!world.CharacterId.HasValue || world.CharacterId.Value == 0 || world.CharacterId.Value == ulong.MaxValue)
         {
+            Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
             _savedTracker.Reset();
             _streakTracker.Reset();
             _reflexTracker.Reset();
             _restoreTracker.Reset();
+            _confirmedDeadIds.Clear();
+            _cachedIncapBonus.Clear();
             _pendingRestoreTargetId = 0;
             _lastAutoTargetPlayerId = 0;
             _prevSelfSp = null;
             return;
         }
+
+        var members = new WatchedMemberSnapshot[world.Observations.Length];
+        var activeIds = new HashSet<ulong>(world.Observations.Length);
+        for (int i = 0; i < world.Observations.Length; i++)
+        {
+            var obs = world.Observations[i];
+            activeIds.Add(obs.Id);
+            members[i] = EvaluateAndTrackObservationLocked(obs);
+        }
+        PruneLifeCachesLocked(activeIds);
+        Volatile.Write(ref _members, members);
 
         if (_settings.PluginEnabled && _prevSelfSp.HasValue && world.SelfSpellPoints.HasValue && world.SelfSpellPoints.Value < _prevSelfSp.Value)
         {
@@ -1341,11 +1588,11 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             return;
         }
 
-        var watchedList = HealerState.FilterWatched(world.Members, _settings, IsMemberMutedLocked);
+        var watchedList = HealerState.FilterWatched(members, _settings, IsMemberMutedLocked);
         var watchedArray = watchedList.ToArray();
 
         var updated = _settings.Copy();
-        bool settingsChanged = _streakTracker.ProcessWatched(world.Members, watchedList, _settings.PluginEnabled, world.InTown, updated);
+        bool settingsChanged = _streakTracker.ProcessWatched(members, watchedList, _settings.PluginEnabled, world.InTown, updated);
 
         var saves = _savedTracker.ProcessScanDetailed(
             watchedArray,
@@ -2034,6 +2281,8 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
             _partyConnected.Clear();
             _mutedIds.Clear();
             _mutedNames.Clear();
+            _confirmedDeadIds.Clear();
+            _cachedIncapBonus.Clear();
             _pendingRestoreTargetId = 0;
             _lastAutoTargetPlayerId = 0;
             Volatile.Write(ref _members, Array.Empty<WatchedMemberSnapshot>());
