@@ -28,8 +28,8 @@ python3 ci/get_sdk_linux.py --destination .sdk-cache
 dotnet build HealersHelper.sln -c Release "-p:DungeonHelperDir=$PWD/.sdk-cache/dh4" "-p:DungeonHelper5Dir=$PWD/.sdk-cache/dh5"
 python3 ci/check_build_output.py src/bin/Release/net8.0-windows Release --target dh4
 python3 ci/check_build_output.py src-dh5/bin/x64/Release/net10.0 Release --target dh5
-python3 ci/sign_dh5.py --dll src-dh5/bin/x64/Release/net10.0/VoK.HealersHelper.dll --version 1.5.0 --output dist/HealersHelper-1.5.0-dh5-plugin.zip --allow-unsigned
-dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 --no-build -- dist/HealersHelper-1.5.0-dh5-plugin.zip "$PWD/.sdk-cache/dh5"
+python3 ci/sign_dh5.py --dll src-dh5/bin/x64/Release/net10.0/VoK.HealersHelper.dll --version 1.5.1 --output dist/HealersHelper-1.5.1-dh5-plugin.zip --allow-unsigned
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 --no-build -- dist/HealersHelper-1.5.1-dh5-plugin.zip "$PWD/.sdk-cache/dh5"
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release --no-build
 python3 -m unittest discover -s ci -p 'test_*.py' -v
 ```

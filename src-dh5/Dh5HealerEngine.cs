@@ -2195,14 +2195,16 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
         return pid == (uint)Environment.ProcessId;
     }
 
-    private static bool DetectWineRuntime()
+    internal static bool DetectWineRuntime()
     {
         if (!OperatingSystem.IsWindows())
             return false;
         try
         {
-            IntPtr ntdll = GetModuleHandle("ntdll.dll");
-            return ntdll != IntPtr.Zero && GetProcAddress(ntdll, "wine_get_version") != IntPtr.Zero;
+            return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINELOADERNOEXEC"))
+                || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINEPREFIX"))
+                || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STEAM_COMPAT_DATA_PATH"))
+                || File.Exists(@"Z:\etc\os-release");
         }
         catch
         {
@@ -2302,12 +2304,6 @@ internal sealed class Dh5HealerEngine : IHealerEngineView, IDisposable
                 _settings.PeopleSaved));
         }
     }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)]
-    private static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

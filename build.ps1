@@ -1,7 +1,7 @@
 param(
     [string]$DungeonHelperDir = (Join-Path $env:APPDATA 'Dungeon Helper'),
     [string]$DungeonHelper5Dir = $env:DH5_SDK_DIR,
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.5.0',
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.5.1',
     [string]$Dh5KeyFile = $env:DH_AUTHOR_KEY_FILE,
     [switch]$AllowUnsignedDh5,
     [switch]$SkipTests

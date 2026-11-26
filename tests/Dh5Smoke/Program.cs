@@ -115,19 +115,24 @@ internal static class Program
         try
         {
             string dllPath;
+            string[] assembliesToScan;
             if (targetPath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
                 dllPath = VerifyAndExtractZip(targetPath, tempWork, requireSigned);
+                assembliesToScan = Directory.GetFiles(tempWork, "*.dll", SearchOption.AllDirectories)
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
             }
             else
             {
                 if (requireSigned)
                     throw new Exception("--require-signed requires a packaged DH 5 plugin .zip archive");
                 dllPath = targetPath;
+                assembliesToScan = [dllPath];
                 Console.WriteLine($"PASS Direct DLL smoke target: {Path.GetFileName(dllPath)} (unsigned mode)");
             }
 
-            VerifyPeReferencesAndTokens(dllPath, sdkDllPath);
+            VerifyPeReferencesAndTokens(dllPath, sdkDllPath, assembliesToScan);
             await RunFunctionalRuntimeSmokeAsync(dllPath, sdkDllPath, tempWork);
             Console.WriteLine("ALL DH 5 SMOKE CHECKS PASSED.");
             return 0;
@@ -355,7 +360,149 @@ internal static class Program
             throw new Exception($"WinVerifyTrust failed on '{dllPath}' with HRESULT 0x{trustStatus:X8}");
     }
 
-    private static void VerifyPeReferencesAndTokens(string dllPath, string sdkDllPath)
+    // DH 5 PluginLoader security scanner rules (DungeonHelper.dll 5.0.858).
+    private static readonly HashSet<string> ForbiddenDh5PInvokes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ReadProcessMemory",
+        "WriteProcessMemory",
+        "OpenProcess",
+        "VirtualAllocEx",
+        "VirtualProtectEx",
+        "CreateRemoteThread",
+        "NtReadVirtualMemory",
+        "NtWriteVirtualMemory",
+        "SetWindowsHookExA",
+        "SetWindowsHookExW",
+        "LoadLibraryA",
+        "LoadLibraryW",
+        "LoadLibraryExA",
+        "LoadLibraryExW",
+        "GetProcAddress"
+    };
+
+    private static readonly HashSet<string> ForbiddenDh5TypeRefs = new(StringComparer.Ordinal)
+    {
+        "System.Runtime.Loader.AssemblyLoadContext",
+        "System.Runtime.InteropServices.NativeLibrary",
+        "System.Reflection.Emit.DynamicMethod",
+        "System.Reflection.Emit.ILGenerator",
+        "System.Reflection.Emit.AssemblyBuilder",
+        "System.Reflection.Emit.MethodBuilder",
+        "System.Reflection.Emit.TypeBuilder"
+    };
+
+    private static readonly HashSet<string> ForbiddenDh5MemberRefs = new(StringComparer.Ordinal)
+    {
+        "System.Runtime.InteropServices.Marshal.GetDelegateForFunctionPointer",
+        "System.Reflection.Assembly.Load",
+        "System.Reflection.Assembly.LoadFile",
+        "System.Reflection.Assembly.LoadFrom",
+        "System.Reflection.Assembly.UnsafeLoadFrom"
+    };
+
+    private static void VerifyDh5SecurityConstraints(MetadataReader mr)
+    {
+        var violations = new List<string>();
+
+        // Rule 1: No System.Security.UnverifiableCodeAttribute (no unsafe code).
+        foreach (CustomAttributeHandle cah in mr.CustomAttributes)
+        {
+            CustomAttribute ca = mr.GetCustomAttribute(cah);
+            string? attrTypeName = ResolveCustomAttributeTypeName(mr, ca.Constructor);
+            if (string.Equals(attrTypeName, "System.Security.UnverifiableCodeAttribute", StringComparison.Ordinal))
+                violations.Add("Rule 1 (UnverifiableCodeAttribute / unsafe code)");
+        }
+
+        // Rule 2: No forbidden P/Invoke (MethodImport.Name or MethodDefinition.Name, case-insensitive).
+        foreach (MethodDefinitionHandle mh in mr.MethodDefinitions)
+        {
+            MethodDefinition md = mr.GetMethodDefinition(mh);
+            MethodImport import = md.GetImport();
+            bool isPInvoke = (md.Attributes & MethodAttributes.PinvokeImpl) != 0 || !import.Name.IsNil;
+            if (!isPInvoke)
+                continue;
+
+            string methodName = mr.GetString(md.Name);
+            string importName = import.Name.IsNil ? string.Empty : mr.GetString(import.Name);
+            if (ForbiddenDh5PInvokes.Contains(methodName))
+                violations.Add($"Rule 2 (forbidden P/Invoke MethodDefinition): {methodName}");
+            if (!string.IsNullOrEmpty(importName) && ForbiddenDh5PInvokes.Contains(importName))
+                violations.Add($"Rule 2 (forbidden P/Invoke MethodImport): {importName} (method {methodName})");
+        }
+
+        // Rule 3: No forbidden TypeReferences.
+        foreach (TypeReferenceHandle trh in mr.TypeReferences)
+        {
+            string? fullName = GetFullTypeName(mr, trh);
+            if (!string.IsNullOrEmpty(fullName) && ForbiddenDh5TypeRefs.Contains(fullName))
+                violations.Add($"Rule 3 (forbidden TypeReference): {fullName}");
+        }
+
+        // Rule 4: No forbidden MemberReferences.
+        foreach (MemberReferenceHandle mrh in mr.MemberReferences)
+        {
+            MemberReference mref = mr.GetMemberReference(mrh);
+            string? parentType = GetFullTypeName(mr, mref.Parent);
+            if (string.IsNullOrEmpty(parentType))
+                continue;
+
+            string memberFullName = $"{parentType}.{mr.GetString(mref.Name)}";
+            if (ForbiddenDh5MemberRefs.Contains(memberFullName))
+                violations.Add($"Rule 4 (forbidden MemberReference): {memberFullName}");
+        }
+
+        if (violations.Count > 0)
+        {
+            throw new Exception("DH 5 security constraint violation(s):\n - " + string.Join("\n - ", violations));
+        }
+    }
+
+    private static string? ResolveCustomAttributeTypeName(MetadataReader mr, EntityHandle ctorHandle)
+    {
+        return ctorHandle.Kind switch
+        {
+            HandleKind.MemberReference => GetFullTypeName(mr, mr.GetMemberReference((MemberReferenceHandle)ctorHandle).Parent),
+            HandleKind.MethodDefinition => GetFullTypeName(mr, mr.GetMethodDefinition((MethodDefinitionHandle)ctorHandle).GetDeclaringType()),
+            _ => null
+        };
+    }
+
+    private static string? GetFullTypeName(MetadataReader mr, EntityHandle handle)
+    {
+        if (handle.IsNil)
+            return null;
+
+        if (handle.Kind == HandleKind.TypeReference)
+        {
+            TypeReference tr = mr.GetTypeReference((TypeReferenceHandle)handle);
+            string name = mr.GetString(tr.Name);
+            if (tr.ResolutionScope.Kind == HandleKind.TypeReference)
+            {
+                string? declaring = GetFullTypeName(mr, tr.ResolutionScope);
+                return string.IsNullOrEmpty(declaring) ? name : $"{declaring}+{name}";
+            }
+            string ns = mr.GetString(tr.Namespace);
+            return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+        }
+
+        if (handle.Kind == HandleKind.TypeDefinition)
+        {
+            TypeDefinition td = mr.GetTypeDefinition((TypeDefinitionHandle)handle);
+            string name = mr.GetString(td.Name);
+            TypeDefinitionHandle declaringHandle = td.GetDeclaringType();
+            if (!declaringHandle.IsNil)
+            {
+                string? declaring = GetFullTypeName(mr, declaringHandle);
+                return string.IsNullOrEmpty(declaring) ? name : $"{declaring}+{name}";
+            }
+            string ns = mr.GetString(td.Namespace);
+            return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+        }
+
+        return null;
+    }
+
+    private static void VerifyPeReferencesAndTokens(string dllPath, string sdkDllPath, string[] assembliesToScan)
     {
         var forbiddenRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -368,23 +515,50 @@ internal static class Program
         var typeRefTokens = new List<int>();
         var memberRefTokens = new List<int>();
 
-        using (var fs = File.OpenRead(dllPath))
-        using (var pe = new PEReader(fs))
+        var scannedAssemblies = new List<string>();
+        foreach (string candidatePath in assembliesToScan)
         {
-            MetadataReader mr = pe.GetMetadataReader();
-            foreach (AssemblyReferenceHandle handle in mr.AssemblyReferences)
+            using var fs = File.OpenRead(candidatePath);
+            using var pe = new PEReader(fs);
+            bool isMainPlugin = string.Equals(Path.GetFullPath(candidatePath), Path.GetFullPath(dllPath), StringComparison.OrdinalIgnoreCase);
+            if (!pe.HasMetadata)
             {
-                string refName = mr.GetString(mr.GetAssemblyReference(handle).Name);
-                if (forbiddenRefs.Contains(refName))
-                    throw new Exception($"Forbidden DH 4 desktop assembly reference in DH 5 plugin: '{refName}'");
+                if (isMainPlugin)
+                    throw new Exception($"Main DH 5 plugin assembly has no managed metadata: '{candidatePath}'");
+                continue;
             }
 
-            foreach (TypeReferenceHandle tr in mr.TypeReferences)
-                typeRefTokens.Add(System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken(tr));
+            MetadataReader mr = pe.GetMetadataReader();
+            try
+            {
+                VerifyDh5SecurityConstraints(mr);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Assembly '{Path.GetFileName(candidatePath)}' failed DH 5 security scan: {ex.Message}", ex);
+            }
+            scannedAssemblies.Add(Path.GetFileName(candidatePath));
 
-            foreach (MemberReferenceHandle mem in mr.MemberReferences)
-                memberRefTokens.Add(System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken(mem));
+            if (isMainPlugin)
+            {
+                foreach (AssemblyReferenceHandle handle in mr.AssemblyReferences)
+                {
+                    string refName = mr.GetString(mr.GetAssemblyReference(handle).Name);
+                    if (forbiddenRefs.Contains(refName))
+                        throw new Exception($"Forbidden DH 4 desktop assembly reference in DH 5 plugin: '{refName}'");
+                }
+
+                foreach (TypeReferenceHandle tr in mr.TypeReferences)
+                    typeRefTokens.Add(System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken(tr));
+
+                foreach (MemberReferenceHandle mem in mr.MemberReferences)
+                    memberRefTokens.Add(System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken(mem));
+            }
         }
+
+        if (scannedAssemblies.Count == 0)
+            throw new Exception("No managed assemblies were scanned by VerifyDh5SecurityConstraints");
+        Console.WriteLine($"PASS DH 5 security constraints (no unsafe, 0/15 forbidden P/Invokes, 0/7 forbidden TypeRefs, 0/5 forbidden MemberRefs) on {scannedAssemblies.Count} assembly(ies): {string.Join(", ", scannedAssemblies)}");
 
         var alc = new IsolatedPluginAlc(sdkDllPath);
         try
@@ -502,6 +676,15 @@ internal static class Program
             pluginType.GetMethod("Initialize")!.Invoke(plugin, new[] { mock.GameDataProxy, mock.EventProviderProxy, pluginFolder });
             object engine = pluginType.GetProperty("Engine", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(plugin)!;
             Type engineType = engine.GetType();
+            bool expectedWine = OperatingSystem.IsWindows()
+                && (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINELOADERNOEXEC"))
+                    || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WINEPREFIX"))
+                    || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("STEAM_COMPAT_DATA_PATH"))
+                    || File.Exists(@"Z:\etc\os-release"));
+            bool isWineRuntime = (bool)engineType.GetField("IsWineRuntime", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.GetValue(null)!;
+            bool detectedWine = (bool)engineType.GetMethod("DetectWineRuntime", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)!.Invoke(null, null)!;
+            if (isWineRuntime != expectedWine || detectedWine != expectedWine)
+                throw new Exception($"Dh5HealerEngine Wine detection mismatch: IsWineRuntime={isWineRuntime}, DetectWineRuntime()={detectedWine}, expected={expectedWine}");
             MethodInfo tickOnce = engineType.GetMethod("RunTickOnceForTestAsync", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
             MethodInfo viewMethod = engineType.GetMethod("View")!;
             MethodInfo getSettingsMethod = engineType.GetMethod("GetSettings")!;

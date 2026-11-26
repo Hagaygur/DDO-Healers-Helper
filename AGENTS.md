@@ -38,7 +38,7 @@ Build with the .NET 10 SDK (`global.json`); do not merge `src/` and `src-dh5/` i
   - Deduplicate hotkeys in `HotkeyMatcher`; keep `TogglePluginHotkey` (`Ctrl+Shift+K`) active when `PluginEnabled` is `false`; preserve offline persistence (`OfflineSettingsEngineView`) and dirty-tracked saves.
   - DH 4 HUDs keep `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, `WDA_EXCLUDEFROMCAPTURE` (`0x11`), `IsWineRuntime` guards, and `HWND_TOPMOST`. Font sizes are exact integer pixels (`FontSizePixels`: `18..140`, `StatusFontSizePixels`: `9..48`); `BannerOpacity` clamps `20..255`.
   - Share `UiTheme` (`EberronGold = 0`, `CannithArcane = 1`, `FeywildTwilight = 2`) from `src/UiThemePalette.cs` across DH 4 and DH 5 while keeping `v1.3.0` custom banner colors/opacity/disable and `13/8/6`-arg presentation constructors intact (preserving `minor` SemVer).
-  - State compatibility accurately: DH 4 is tested live on DDO + DH + Lossless Scaling on Windows 11 (not guaranteed on all configs), cross-compiled on Linux with `IsWineRuntime` guards (live Linux gameplay untested); DH 5 Beta trust gate and ALC loading are verified locally via `TrustProbe` and `Dh5Smoke` against `VoK.Sdk 5.3.0.0` (live DH 5 DX10/11 gameplay untested here).
+  - State compatibility accurately: tested on both DH 4 and DH 5 Beta up through `v1.5.1`, with later versions after `v1.5.1` tested on DH 5 only (`HealersHelper-1.5.1-dh4-plugin.zip` remains on Releases for DH 4 users). DH 4 is tested live on DDO + DH + Lossless Scaling on Windows 11 (not guaranteed on all configs); DH 5 Beta live in-game client load + security constraint validation (`VerifyDh5SecurityConstraints`, zero forbidden P/Invokes such as `GetProcAddress`) is verified alongside `PluginTrustGate` and `Dh5Smoke` against `VoK.Sdk 5.3.0.0`; live Linux/Wine gameplay remains untested.
 
 ## Commands from repository root
 
@@ -46,9 +46,9 @@ Build with the .NET 10 SDK (`global.json`); do not merge `src/` and `src-dh5/` i
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
 .\ci\Get-Sdk.ps1
-.\build.ps1 -Version 1.5.0 -Dh5KeyFile C:\path\to\author.key
-dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.0-dh4-plugin.zip "$env:DH_SDK_DIR"
-dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
+.\build.ps1 -Version 1.5.1 -Dh5KeyFile C:\path\to\author.key
+dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.1-dh4-plugin.zip "$env:DH_SDK_DIR"
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.1-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
 ```
 
 ## Documentation and completion

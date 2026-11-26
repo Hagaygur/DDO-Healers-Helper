@@ -17,8 +17,9 @@ The plugin uses DH's local game-data provider and selection/hotbar APIs. It neve
 
 ## Evidence and platform status
 
+- **DH 4 / DH 5 testing policy:** Tested on both **Dungeon Helper 4 and Dungeon Helper 5 Beta** up through **`v1.5.1`**; later versions after `v1.5.1` are tested on **Dungeon Helper 5 only** (`HealersHelper-1.5.1-dh4-plugin.zip` remains available on Releases for DH 4 users).
 - **Windows 11 live verification (DH 4):** Tested and confirmed working on live DDO + Dungeon Helper 4 + Lossless Scaling on Windows 11 (not guaranteed on any or all OS, GPU, display, or capture configurations).
-- **DH 5 Beta verification:** Verified locally against DH `5.0.858` / `VoK.Sdk 5.3.0.0` via `PluginTrustGate.Evaluate`, `AuthenticodeVerifier.IsSignatureValid`, `DungeonHelper.App` ZIP installation (`TrustProbe`), and `Dh5Smoke --require-signed`; live DX10/11 gameplay inside DH 5 Beta has not yet been tested here.
-- **Linux / Wine / Proton:** Cross-compiles and passes portable C#, DH 5 `Dh5Smoke`, and Python CI suites natively on Ubuntu in GitHub Actions CI (`EnableWindowsTargeting=true` + `msitools` + `osslsigncode`), with DH 4 `IsWineRuntime` guards (`wine_get_version`) so DH 4 should also work via Wine/Proton (live Linux gameplay untested).
+- **DH 5 Beta verification:** Verified for **live DH 5 in-game client load + security constraint validation** (zero forbidden P/Invokes such as `GetProcAddress`, zero `unsafe` code, zero forbidden `TypeReference`/`MemberReference` APIs) alongside `PluginTrustGate.Evaluate`, `AuthenticodeVerifier.IsSignatureValid`, `DungeonHelper.App` ZIP installation (`TrustProbe`), and `Dh5Smoke --require-signed` against DH `5.0.858` / `VoK.Sdk 5.3.0.0`.
+- **Linux / Wine / Proton:** Cross-compiles and passes portable C#, DH 5 `Dh5Smoke`, and Python CI suites natively on Ubuntu in GitHub Actions CI (`EnableWindowsTargeting=true` + `msitools` + `osslsigncode`), with Wine/Proton detection (`wine_get_version` in DH 4; pure managed env/filesystem `DetectWineRuntime()` in DH 5) so DH 4 should also work via Wine/Proton (**live Linux/Wine gameplay remains untested**).
 
 See [Operations](OPERATIONS.md) for verification checklists and [References](REFERENCES.md) for peer-reviewed HCI citations and SDK docs. Agent counterpart: [Context](../agents/CONTEXT.md).

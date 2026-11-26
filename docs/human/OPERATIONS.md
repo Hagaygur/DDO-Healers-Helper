@@ -22,9 +22,9 @@ See [GITHUB.md](../../GITHUB.md) for the CI workflow. Local Windows commands:
 py -3 -m unittest discover -s ci -p "test_*.py" -v
 dotnet run --project tests/HealersHelper.Tests.csproj -c Release -- --contracts dist/contracts.json
 .\ci\Get-Sdk.ps1
-.\build.ps1 -Version 1.5.0 -Dh5KeyFile C:\path\to\author.key
-dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.0-dh4-plugin.zip "$env:DH_SDK_DIR"
-dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.0-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
+.\build.ps1 -Version 1.5.1 -Dh5KeyFile C:\path\to\author.key
+dotnet run --project tests/WindowsSmoke/WindowsSmoke.csproj -c Release -- dist/HealersHelper-1.5.1-dh4-plugin.zip "$env:DH_SDK_DIR"
+dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -- dist/HealersHelper-1.5.1-dh5-plugin.zip "$env:DH5_SDK_DIR" --require-signed
 ```
 
 ## Diagnose by symptom
@@ -40,6 +40,6 @@ dotnet run --project tests/Dh5Smoke/Dh5Smoke.csproj -c Release -p:Platform=x64 -
 
 ## Compatibility & regression checklist
 
-DH 4 is tested and confirmed working on live **DDO + Dungeon Helper 4 + Lossless Scaling on Windows 11** (not guaranteed on all configurations), and cross-compiled on Linux with `IsWineRuntime` guards (live Linux gameplay untested). DH 5 Beta trust gate and ALC execution are verified locally via `TrustProbe` and `Dh5Smoke --require-signed` against `VoK.Sdk 5.3.0.0` (live DX10/11 DH 5 gameplay untested here).
+DDO Healer's Helper is tested on both **Dungeon Helper 4 and Dungeon Helper 5 Beta** up through **`v1.5.1`**; **later versions after `v1.5.1` are tested on Dungeon Helper 5 only** (`HealersHelper-1.5.1-dh4-plugin.zip` remains available on Releases for DH 4 users). DH 4 is tested and confirmed working on live **DDO + Dungeon Helper 4 + Lossless Scaling on Windows 11** (not guaranteed on all configurations), and cross-compiled on Linux with `IsWineRuntime` guards (live Linux/Wine gameplay untested). DH 5 Beta is verified for **live DH 5 in-game client load + security constraint validation** alongside `TrustProbe` (`PluginTrustGate`) and `Dh5Smoke --require-signed` (`VerifyDh5SecurityConstraints`) against `VoK.Sdk 5.3.0.0`.
 
 Agent counterpart: [Workflow](../agents/WORKFLOW.md).

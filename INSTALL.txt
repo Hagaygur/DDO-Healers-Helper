@@ -1,7 +1,8 @@
-DDO HEALER'S HELPER 1.5.0
+DDO HEALER'S HELPER 1.5.1
 
 CHOOSE THE ARCHIVE MATCHING YOUR DUNGEON HELPER VERSION.
 HealersHelper-X.Y.Z-source.zip is separate; do NOT import it into Dungeon Helper.
+(Tested on both DH 4 and DH 5 Beta up through v1.5.1; later versions tested on DH 5 only.)
 
 === DUNGEON HELPER 4 (4.2.x, .NET 8 Windows) ===
 1. Close DDO. Open Dungeon Helper Settings > Add plugin from zip file.
