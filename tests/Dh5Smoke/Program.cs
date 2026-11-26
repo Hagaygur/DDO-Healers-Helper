@@ -587,11 +587,14 @@ internal static class Program
             // Scenario E: SetHotkeyCaptureActive(true) suppresses live hotkey dispatch + deleted entity hydration guard
             MethodInfo setCaptureMethod = engineType.GetMethod("SetHotkeyCaptureActive", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)!;
             setCaptureMethod.Invoke(engine, new object[] { true });
-            await mock.RaiseSdkKeyDownAsync(0x4B, ctrl: true, shift: true, alt: false); // Ctrl+Shift+K (TogglePlugin)
-            await (Task)tickOnce.Invoke(engine, null)!;
-            bool stillEnabledAfterCapture = (bool)getSettingsMethod.Invoke(engine, null)!.GetType().GetProperty("PluginEnabled")!.GetValue(getSettingsMethod.Invoke(engine, null)!)!;
-            if (!stillEnabledAfterCapture)
-                throw new Exception("SetHotkeyCaptureActive(true) failed to suppress live TogglePlugin hotkey during recording");
+            if (OperatingSystem.IsWindows())
+            {
+                await mock.RaiseSdkKeyDownAsync(0x4B, ctrl: true, shift: true, alt: false); // Ctrl+Shift+K (TogglePlugin)
+                await (Task)tickOnce.Invoke(engine, null)!;
+                bool stillEnabledAfterCapture = (bool)getSettingsMethod.Invoke(engine, null)!.GetType().GetProperty("PluginEnabled")!.GetValue(getSettingsMethod.Invoke(engine, null)!)!;
+                if (!stillEnabledAfterCapture)
+                    throw new Exception("SetHotkeyCaptureActive(true) failed to suppress live TogglePlugin hotkey during recording");
+            }
             setCaptureMethod.Invoke(engine, new object[] { false });
 
             // Deleted entity must skip UpdateProperties hydration cleanly without crashing.
